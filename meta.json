@@ -1,0 +1,17 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "hunter:stock-alert",
+  "visibility": "private",
+  "url": "",
+  "description": "A module to check stock fill levels and send email alerts.",
+  "models": [
+    {
+      "api": "rdk:component:sensor",
+      "model": "hunter:stock-alert:email",
+      "short_description": "A module to check stock fill levels and send email alerts.",
+      "markdown_link": "README.md#model-hunterstock-alertemail"
+    }
+  ],
+  "entrypoint": "./run.sh",
+  "first_run": ""
+}
