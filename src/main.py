@@ -128,8 +128,8 @@ class StockAlertEmail(BaseStockAlert):
 
 async def main():
     module = Module.from_args()
-    module.add_model_from_registry(Sensor.API, StockAlertEmail.MODEL, StockAlertEmail.new)
-    # module.add_model_from_registry(Sensor.API, StockAlertSMS.MODEL, StockAlertSMS.new)
+    module.add_model_from_registry(Sensor.API, StockAlertEmail.MODEL)
+    # module.add_model_from_registry(Sensor.API, StockAlertSMS.MODEL)
     await module.start()
 
 if __name__ == "__main__":
