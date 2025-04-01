@@ -22,6 +22,9 @@ class BaseStockAlert(Sensor):
         self.areas = []  # List of specific areas of interest
 
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
+        if "langer_fill" not in self.dependencies:
+            LOGGER.warning("langer_fill not available yet, retrying later")
+            return {"empty_areas": []}
         sensor: Sensor = self.dependencies["langer_fill"]
         try:
             readings = await sensor.get_readings()
@@ -76,9 +79,13 @@ class StockAlertEmail(BaseStockAlert):
         self.areas = struct_to_dict(config.attributes).get("areas", [])
         self.descriptor = struct_to_dict(config.attributes).get("descriptor", "Areas of Interest")
         self.dependencies = dependencies
+        LOGGER.info(f"Dependencies received: {list(self.dependencies.keys())}")
         asyncio.create_task(self.run_loop())
 
     async def send_alert(self, empty_areas: list[str]):
+        if "sendgrid_email" not in self.dependencies:
+            LOGGER.warning("sendgrid_email not available, skipping alert")
+            return
         email: Generic = self.dependencies["sendgrid_email"]
         subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
         await email.do_command({
