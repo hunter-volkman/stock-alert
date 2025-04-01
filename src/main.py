@@ -68,7 +68,7 @@ class StockAlertEmail(BaseStockAlert):
         descriptor = attributes.get("descriptor", "Areas of Interest")
         if not isinstance(descriptor, str):
             raise ValueError("descriptor must be a string")
-        return ["langer_fill", "shared-services:sendgrid_email"]
+        return ["langer_fill", "sendgrid_email"]
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         self.location = config.attributes.fields["location"].string_value
@@ -79,7 +79,7 @@ class StockAlertEmail(BaseStockAlert):
         asyncio.create_task(self.run_loop())
 
     async def send_alert(self, empty_areas: list[str]):
-        email: Generic = self.dependencies["shared-services:sendgrid_email"]
+        email: Generic = self.dependencies["sendgrid_email"]
         subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
         await email.do_command({
             "command": "send",
@@ -111,7 +111,7 @@ class StockAlertEmail(BaseStockAlert):
 #         descriptor = attributes.get("descriptor", "Areas of Interest")
 #         if not isinstance(descriptor, str):
 #             raise ValueError("descriptor must be a string")
-#         return ["langer_fill", "shared-services:twilio_sms"]
+#         return ["langer_fill", "twilio_sms"]
 #     
 #     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
 #         self.location = config.attributes.fields["location"].string_value
@@ -122,12 +122,15 @@ class StockAlertEmail(BaseStockAlert):
 #         asyncio.create_task(self.run_loop())
 #     
 #     async def send_alert(self, empty_areas: list[str]):
-#         sms: Generic = self.dependencies["shared-services:twilio_sms"]
+#         sms: Generic = self.dependencies["twilio_sms"]
 #         message = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
 #         await sms.do_command({"command": "send", "to": self.phone_numbers, "message": message})
 
-if __name__ == "__main__":
+async def main():
     module = Module.from_args()
     module.add_model_from_registry(Sensor.API, StockAlertEmail.MODEL, StockAlertEmail.new)
     # module.add_model_from_registry(Sensor.API, StockAlertSMS.MODEL, StockAlertSMS.new)
-    asyncio.run(module.start())
+    await module.start()
+
+if __name__ == "__main__":
+    asyncio.run(main())
