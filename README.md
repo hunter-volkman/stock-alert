@@ -24,7 +24,7 @@ Sends email alerts via a SendGrid service when configured areas of interest are 
 | `location` | string  | Required  | The location. |
 | `recipients` | list[str] | Required  | List of email addresses to receive alerts. |
 | `areas` | list[str] | Required  | List of specific area identifiers to monitor (e.g., "A-1"). |
-| `descriptor` | string | Optional  | Descriptor for areas in alerts (e.g., "Shelves"; defaults to "Areas of Interest"). |
+| `descriptor` | string | Optional  | Descriptor for areas in alerts (e.g., "Shelves"). |
 
 #### Example Configuration
 
