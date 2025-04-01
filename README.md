@@ -4,16 +4,16 @@ This module monitors stock levels from a `viam-soleng:stock-fill:fillpercent` se
 
 ## Model hunter:stock-alert:email
 
-Sends email alerts via a remote SendGrid service when configured areas of interest are empty (e.g., stock fill level = 0), with a customizable subject line.
+Sends email alerts via a SendGrid service when configured areas of interest are empty (e.g., stock fill level = 0), with a customizable subject line.
 
 ### Configuration
 
 ```json
 {
-  "location": "Test Location",
-  "recipients": ["recipient1@gmail.com", "recipient2@gmail.com"],
-  "areas": ["Area-1", "Area-2", "Area-3"],
-  "descriptor": "Boxes"
+  "location": "389 5th Ave, New York, NY",
+  "recipients": ["hunter.volkman@viam.com", "pret-a-manger@viam.com"],
+  "areas": ["A-1", "A-2", "A-3"],
+  "descriptor": "Shelves"
 }
 ```
 
@@ -24,13 +24,13 @@ Sends email alerts via a remote SendGrid service when configured areas of intere
 | `location` | string  | Required  | The location. |
 | `recipients` | list[str] | Required  | List of email addresses to receive alerts. |
 | `areas` | list[str] | Required  | List of specific area identifiers to monitor (e.g., "A-1"). |
-| `descriptor` | string | Optional  | Descriptor for areas in alerts (e.g., "Shelves", "Coolers"; defaults to "Areas of Interest"). |
+| `descriptor` | string | Optional  | Descriptor for areas in alerts (e.g., "Shelves"; defaults to "Areas of Interest"). |
 
 #### Example Configuration
 
 ```json
 {
-  "name": "langer_alert_email",
+  "name": "langer_alert",
   "type": "sensor",
   "model": "hunter:stock-alert:email",
   "attributes": {
@@ -39,13 +39,19 @@ Sends email alerts via a remote SendGrid service when configured areas of intere
     "areas": ["A-1", "A-2", "A-3"],
     "descriptor": "Shelves"
   },
-  "depends_on": ["langer_fill", "shared-services:sendgrid_email"]
+  "depends_on": ["langer_fill", "sendgrid_email"]
 }
 ```
 
 #### Dependencies
 * `langer_fill`: Local sensor (`viam-soleng:stock-fill:fillpercent`).
 * `shared-services:sendgrid_email`: Remote service (`mcvella:messaging:sendgrid-email`).
+
+
+#### Usage
+1. Configured the `email` model with your location, recipients, areas, and descriptor.
+2. Set up the `langer_fill` sensor and a `sendgrid_email` service (local or remote).
+3. The module polls every 15 minutes and sends alerts for empty areas (e.g., "389 5th Ave, New York, NY - Empty Shelves: A-1, A-2").
 
 ### DoCommand
 
@@ -61,3 +67,9 @@ If your model implements DoCommand, provide an example payload of each command t
   }
 }
 ```
+
+### Future Models
+
+The module supports additional alert types, such as:
+* `hunter:stock-alert:sms`: SMS alerts (not yet implemented)
+* Extend by adding new models (e.g., uncomment `StockAlertSMS` in `main.py` and register in `meta.json`).
