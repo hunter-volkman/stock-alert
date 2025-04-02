@@ -44,6 +44,9 @@ class BaseStockAlert(Sensor):
         self.is_within_operating_hours = self._is_within_operating_hours(current_time)
         self.next_scheduled_check = self._get_next_check_time(current_time)
         
+        # For returning current values of monitored areas
+        monitored_values = {}
+        
         # Only attempt to get readings from the fill sensor if it's available and within operating hours
         empty_areas = []
         if self.is_within_operating_hours:
@@ -62,8 +65,29 @@ class BaseStockAlert(Sensor):
             else:
                 try:
                     readings = await fill_sensor.get_readings()
-                    empty_areas = [k for k, v in readings["readings"].items() 
-                                if isinstance(v, (int, float)) and v == 0 and k in self.areas]
+                    # Debug the readings format
+                    LOGGER.info(f"Received readings from langer_fill: {readings}")
+                    
+                    # More robust handling of readings
+                    if isinstance(readings, dict) and "readings" in readings:
+                        # Original expected format
+                        empty_areas = [k for k, v in readings["readings"].items() 
+                                    if isinstance(v, (int, float)) and v == 0 and k in self.areas]
+                        # Capture current values for monitored areas
+                        for area in self.areas:
+                            if area in readings["readings"]:
+                                monitored_values[area] = readings["readings"][area]
+                    elif isinstance(readings, dict):
+                        # Alternative format - try to find readings at the top level
+                        empty_areas = [k for k, v in readings.items() 
+                                    if isinstance(v, (int, float)) and v == 0 and k in self.areas]
+                        # Capture current values for monitored areas
+                        for area in self.areas:
+                            if area in readings:
+                                monitored_values[area] = readings[area]
+                    else:
+                        LOGGER.error(f"Unexpected readings format: {type(readings)}")
+                        empty_areas = []
                     
                     # Record empty areas in history with timestamp
                     self.empty_areas_history[current_time.strftime("%Y-%m-%d %H:%M:%S")] = empty_areas
@@ -95,7 +119,8 @@ class BaseStockAlert(Sensor):
             "within_operating_hours": self.is_within_operating_hours,
             "operating_hours": f"{self.start_time} to {self.end_time}",
             "interval_minutes": self.interval_minutes,
-            "areas_monitored": self.areas
+            "areas_monitored": self.areas,
+            "monitored_values": monitored_values
         }
 
     def _is_within_operating_hours(self, current_time: datetime.datetime) -> bool:
@@ -411,6 +436,30 @@ class StockAlertEmail(BaseStockAlert):
                 "interval_minutes": self.interval_minutes,
                 "next_check": str(self.next_scheduled_check)
             }
+        
+        elif cmd == "debug_sensor":
+            # Debug the langer_fill sensor
+            results = {"status": "debug"}
+            try:
+                # Find fill sensor
+                fill_sensor = None
+                for name, resource in self.dependencies.items():
+                    name_str = str(name)
+                    if isinstance(resource, Sensor) and "langer_fill" in name_str:
+                        fill_sensor = resource
+                        results["found_sensor"] = True
+                        break
+                
+                if fill_sensor:
+                    # Get readings directly
+                    readings = await fill_sensor.get_readings()
+                    results["raw_readings"] = readings
+                else:
+                    results["found_sensor"] = False
+            except Exception as e:
+                results["error"] = str(e)
+            
+            return results
         
         else:
             return {
