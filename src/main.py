@@ -47,13 +47,19 @@ class BaseStockAlert(Sensor):
         # Only attempt to get readings from the fill sensor if it's available and within operating hours
         empty_areas = []
         if self.is_within_operating_hours:
-            if "langer_fill" not in self.dependencies:
-                LOGGER.warning("langer_fill not available yet, retrying later")
+            # Improved dependency handling
+            fill_sensor = None
+            for name, resource in self.dependencies.items():
+                if isinstance(resource, Sensor) and "langer_fill" in name.lower():
+                    fill_sensor = resource
+                    break
+                    
+            if not fill_sensor:
+                LOGGER.warning("langer_fill sensor not available yet, retrying later")
                 self.status = "waiting_for_dependency"
             else:
                 try:
-                    sensor: Sensor = self.dependencies["langer_fill"]
-                    readings = await sensor.get_readings()
+                    readings = await fill_sensor.get_readings()
                     empty_areas = [k for k, v in readings["readings"].items() 
                                 if isinstance(v, (int, float)) and v == 0 and k in self.areas]
                     
@@ -305,13 +311,19 @@ class StockAlertEmail(BaseStockAlert):
         self.status = "configured"
 
     async def send_alert(self, empty_areas: List[str]):
-        """Send email alert for empty areas using sendgrid service."""
-        if "sendgrid_email" not in self.dependencies:
+        """Send email alert for empty areas using SendGrid service."""
+        # Find SendGrid email service in dependencies
+        email_service = None
+        for name, resource in self.dependencies.items():
+            if isinstance(resource, Generic) and "sendgrid_email" in name.lower():
+                email_service = resource
+                break
+                
+        if not email_service:
             LOGGER.warning("sendgrid_email service not available, skipping alert")
             return
         
         try:
-            email: Generic = self.dependencies["sendgrid_email"]
             subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
             
             # Log the alert
@@ -319,7 +331,7 @@ class StockAlertEmail(BaseStockAlert):
             LOGGER.info(f"Sending email alert at {timestamp} for empty {self.descriptor.lower()}: {', '.join(empty_areas)}")
             
             # Send the email
-            await email.do_command({
+            await email_service.do_command({
                 "command": "send",
                 "to": self.recipients,
                 "subject": subject,
@@ -492,12 +504,18 @@ class StockAlertSMS(BaseStockAlert):
     
     async def send_alert(self, empty_areas: List[str]):
         """Send SMS alert for empty areas using Twilio service."""
-        if "twilio_sms" not in self.dependencies:
+        # Find Twilio SMS service in dependencies
+        sms_service = None
+        for name, resource in self.dependencies.items():
+            if isinstance(resource, Generic) and "twilio_sms" in name.lower():
+                sms_service = resource
+                break
+                
+        if not sms_service:
             LOGGER.warning("twilio_sms service not available, skipping alert")
             return
         
         try:
-            sms: Generic = self.dependencies["twilio_sms"]
             message = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
             
             # Log the alert
@@ -505,7 +523,7 @@ class StockAlertSMS(BaseStockAlert):
             LOGGER.info(f"Sending SMS alert at {timestamp} for empty {self.descriptor.lower()}: {', '.join(empty_areas)}")
             
             # Send the SMS
-            await sms.do_command({
+            await sms_service.do_command({
                 "command": "send", 
                 "to": self.phone_numbers, 
                 "message": message
