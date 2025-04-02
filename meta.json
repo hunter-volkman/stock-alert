@@ -8,13 +8,13 @@
     {
       "api": "rdk:component:sensor",
       "model": "hunter:stock-alert:email",
-      "short_description": "Sends email alerts for empty areas of interest on a scheduled basis with configurable operating hours and alert language.",
+      "short_description": "Sends email alerts for empty areas of interest.",
       "markdown_link": "README.md#model-hunterstock-alertemail"
     },
     {
       "api": "rdk:component:sensor",
       "model": "hunter:stock-alert:sms",
-      "short_description": "Sends SMS alerts for empty areas of interest on a scheduled basis with configurable operating hours and alert language.",
+      "short_description": "Sends SMS alerts for empty areas of interest.",
       "markdown_link": "README.md#model-hunterstock-alertsms"
     }
   ],
