@@ -50,7 +50,9 @@ class BaseStockAlert(Sensor):
             # Improved dependency handling
             fill_sensor = None
             for name, resource in self.dependencies.items():
-                if isinstance(resource, Sensor) and "langer_fill" in name.lower():
+                # Convert name to string before using .lower()
+                name_str = str(name)
+                if isinstance(resource, Sensor) and "langer_fill" in name_str:
                     fill_sensor = resource
                     break
                     
@@ -77,10 +79,10 @@ class BaseStockAlert(Sensor):
                 except Exception as e:
                     LOGGER.error(f"Error in get_readings: {e}")
                     self.status = f"error: {str(e)}"
-        else:
-            self.status = "outside_operating_hours"
-            LOGGER.debug(f"Not checking - outside operating hours ({self.start_time}-{self.end_time})")
-            
+            else:
+                self.status = "outside_operating_hours"
+                LOGGER.debug(f"Not checking - outside operating hours ({self.start_time}-{self.end_time})")
+                
         # Comprehensive readings for monitoring
         return {
             "empty_areas": empty_areas,
@@ -315,7 +317,9 @@ class StockAlertEmail(BaseStockAlert):
         # Find SendGrid email service in dependencies
         email_service = None
         for name, resource in self.dependencies.items():
-            if isinstance(resource, Generic) and "sendgrid_email" in name.lower():
+            # Convert name to string before using .lower()
+            name_str = str(name)
+            if isinstance(resource, Generic) and "sendgrid_email" in name_str:
                 email_service = resource
                 break
                 
@@ -507,7 +511,9 @@ class StockAlertSMS(BaseStockAlert):
         # Find Twilio SMS service in dependencies
         sms_service = None
         for name, resource in self.dependencies.items():
-            if isinstance(resource, Generic) and "twilio_sms" in name.lower():
+            # Convert name to string before using .lower()
+            name_str = str(name)
+            if isinstance(resource, Generic) and "twilio_sms" in name_str:
                 sms_service = resource
                 break
                 
