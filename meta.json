@@ -3,13 +3,19 @@
   "module_id": "hunter:stock-alert",
   "visibility": "public_unlisted",
   "url": "https://github.com/hunter-volkman/stock-alert",
-  "description": "A module to monitor stock levels and send alerts (e.g., email, SMS) for empty areas of interest at specified intervals.",
+  "description": "A module to monitor stock levels and send alerts (e.g., email, SMS) for empty areas of interest at scheduled intervals with configurable operating hours.",
   "models": [
     {
       "api": "rdk:component:sensor",
       "model": "hunter:stock-alert:email",
-      "short_description": "Sends email alerts for empty areas of interest every 15 minutes with configurable subject language.",
+      "short_description": "Sends email alerts for empty areas of interest on a scheduled basis with configurable operating hours and alert language.",
       "markdown_link": "README.md#model-hunterstock-alertemail"
+    },
+    {
+      "api": "rdk:component:sensor",
+      "model": "hunter:stock-alert:sms",
+      "short_description": "Sends SMS alerts for empty areas of interest on a scheduled basis with configurable operating hours and alert language.",
+      "markdown_link": "README.md#model-hunterstock-alertsms"
     }
   ],
   "entrypoint": "./run.sh",
