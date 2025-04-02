@@ -1,7 +1,7 @@
 {
   "$schema": "https://dl.viam.dev/module.schema.json",
   "module_id": "hunter:stock-alert",
-  "visibility": "private",
+  "visibility": "public_unlisted",
   "url": "https://github.com/hunter-volkman/stock-alert",
   "description": "A module to monitor stock levels and send alerts (e.g., email, SMS) for empty areas of interest at specified intervals.",
   "models": [
