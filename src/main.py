@@ -79,10 +79,10 @@ class BaseStockAlert(Sensor):
                 except Exception as e:
                     LOGGER.error(f"Error in get_readings: {e}")
                     self.status = f"error: {str(e)}"
-            else:
-                self.status = "outside_operating_hours"
-                LOGGER.debug(f"Not checking - outside operating hours ({self.start_time}-{self.end_time})")
-                
+        else:
+            self.status = "outside_operating_hours"
+            LOGGER.debug(f"Not checking - outside operating hours ({self.start_time}-{self.end_time})")
+            
         # Comprehensive readings for monitoring
         return {
             "empty_areas": empty_areas,
