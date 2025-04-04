@@ -386,38 +386,40 @@ Time: {timestamp}
         
         try:
             while True:
-                # Get current time
+                # Get current time and next check time
                 current_time = datetime.datetime.now()
-                
-                # Run check if it's time
-                if self._is_check_time(current_time):
-                    await self.perform_check()
-                
-                # Calculate sleep time to next check
                 next_check = self._get_next_check_time(current_time)
                 
-                if next_check:
-                    # Sleep until next check time or at most 60 seconds
-                    sleep_seconds = min(60, (next_check - current_time).total_seconds())
-                    if sleep_seconds <= 0:
-                        sleep_seconds = 60  # Default to 1 minute if calculation is negative
+                if next_check is None:
+                    # No check times configured, sleep for 1 hour and retry
+                    LOGGER.warning(f"No check times configured for {self.name}, sleeping for 1 hour")
+                    await asyncio.sleep(3600)
+                    continue
+                
+                # Calculate sleep time
+                sleep_seconds = (next_check - current_time).total_seconds()
+                
+                if sleep_seconds <= 0:
+                    # We're already past the check time, so run now
+                    LOGGER.info(f"Already past scheduled check time {next_check}, running now")
+                    await self.perform_check()
+                    # Small gap between checks
+                    await asyncio.sleep(1)
+                    continue
+                
+                # Log next check information
+                LOGGER.info(f"Next check scheduled for {next_check.strftime('%H:%M')} (sleeping {sleep_seconds:.1f} seconds)")
+                
+                try:
+                    # Sleep until the exact next check time
+                    await asyncio.sleep(sleep_seconds)
                     
-                    LOGGER.info(f"Next check at {next_check.strftime('%H:%M')}, sleeping for {sleep_seconds:.1f} seconds")
+                    # Perform the check
+                    await self.perform_check()
                     
-                    # Sleep in smaller chunks to be responsive to cancellation
-                    remaining = sleep_seconds
-                    while remaining > 0:
-                        chunk = min(remaining, 10)  # 10 second chunks
-                        await asyncio.sleep(chunk)
-                        remaining -= chunk
-                        
-                        # Check if task is being cancelled
-                        if asyncio.current_task().cancelled():
-                            raise asyncio.CancelledError()
-                else:
-                    # No scheduled checks, sleep for 5 minutes
-                    LOGGER.info(f"No scheduled checks for {self.name}, sleeping for 5 minutes")
-                    await asyncio.sleep(300)
+                except asyncio.CancelledError:
+                    LOGGER.info(f"Sleep interrupted for {self.name}")
+                    raise
                 
         except asyncio.CancelledError:
             LOGGER.info(f"Check loop cancelled for {self.name}")
