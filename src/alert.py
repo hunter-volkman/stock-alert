@@ -304,13 +304,18 @@ class StockAlertEmail(Sensor):
         # Send the email
         try:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
+            
+            # Sort empty areas alphabetically and numerically
+            sorted_areas = sorted(empty_areas, key=lambda x: (x.split('-')[0], int(x.split('-')[1]) if len(x.split('-')) > 1 and x.split('-')[1].isdigit() else x.split('-')[1]))
+            
+            # Format the subject with location at the end
+            subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
             await email_service.do_command({
                 "command": "send",
                 "to": self.recipients,
                 "subject": subject,
-                "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(empty_areas)}
+                "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
 
 Location: {self.location}
 Time: {timestamp}
