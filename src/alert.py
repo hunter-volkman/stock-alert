@@ -497,7 +497,7 @@ class StockAlertEmail(Sensor):
                 "body": body
             }
             
-            # Add image attachment if available
+            # Add image if available - using base64 embedding in HTML
             if image_info and os.path.exists(image_info["path"]):
                 try:
                     # Read image file
@@ -511,49 +511,40 @@ class StockAlertEmail(Sensor):
                         # Encode as base64
                         encoded_image = base64.b64encode(image_data).decode("utf-8")
                         
-                        # Log detailed information about the attachment
-                        LOGGER.info(f"Adding image: {os.path.basename(image_info['path'])}, size: {len(image_data)} bytes, encoded length: {len(encoded_image)}")
+                        # Log detailed information
+                        LOGGER.info(f"Embedding image directly in HTML: {os.path.basename(image_info['path'])}, size: {len(image_data)} bytes, encoded length: {len(encoded_image)}")
                         
-                        # Update the email command with attachment
-                        # Modified to use content_id for inline display
-                        image_filename = os.path.basename(image_info["path"])
-                        content_id = f"<image_{timestamp.replace(' ', '_').replace(':', '').replace('-', '')}>"
-                        
-                        email_cmd["attachments"] = [{
-                            "filename": image_filename,
-                            "content": encoded_image,
-                            "type": "image/jpeg",
-                            "disposition": "inline",
-                            "content_id": content_id
-                        }]
-                        
-                        # Add HTML body with image reference
+                        # Create HTML with embedded image (inline base64)
                         html_body = f"""<html>
     <body>
     <p>The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}</p>
     <p>Location: {self.location}<br>
     Time: {timestamp}</p>
     <p>A snapshot of the area is shown below:</p>
-    <img src="cid:{content_id[1:-1]}" alt="Empty area snapshot" style="max-width: 100%;">
+    <img src="data:image/jpeg;base64,{encoded_image}" alt="Empty area snapshot" style="max-width: 100%;">
     </body>
     </html>"""
                         
                         # Add HTML version to the email
                         email_cmd["html"] = html_body
                         
-                        # Update text body to mention the attachment
-                        email_cmd["body"] += "\n\nA snapshot of the area is attached to this email."
+                        # Update text body to mention the image
+                        email_cmd["body"] += "\n\nA snapshot of the area is included in this email."
                 except Exception as e:
-                    LOGGER.error(f"Error preparing image attachment: {e}")
+                    LOGGER.error(f"Error preparing embedded image: {e}")
                     if hasattr(e, "__traceback__"):
                         import traceback
                         tb_str = ''.join(traceback.format_exception(type(e), e, e.__traceback__))
                         LOGGER.error(f"Traceback: {tb_str}")
             
-            # Log the email command structure (excluding the actual attachment content for brevity)
-            log_cmd = {k: v for k, v in email_cmd.items() if k != "attachments"}
-            if "attachments" in email_cmd:
-                log_cmd["attachments"] = f"[{len(email_cmd['attachments'])} attachments]"
+            # Log the email command structure (excluding the large base64 content for brevity)
+            log_cmd = email_cmd.copy()
+            if "html" in log_cmd:
+                # Truncate the HTML to avoid logging the entire base64 string
+                html_parts = log_cmd["html"].split("base64,")
+                if len(html_parts) > 1:
+                    log_cmd["html"] = html_parts[0] + "base64,[BASE64_DATA_TRUNCATED]" + html_parts[1].split("</body>")[1]
+            
             LOGGER.info(f"Email command structure: {json.dumps(log_cmd)}")
             
             # Send the email
