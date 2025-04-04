@@ -2,16 +2,19 @@ import asyncio
 import datetime
 import json
 import os
+import base64
 import fasteners
-from typing import Mapping, Optional, Any, List
+from typing import Mapping, Optional, Any, List, Dict
 from viam.module.module import Module
 from viam.components.sensor import Sensor
+from viam.components.camera import Camera
 from viam.services.generic import Generic
 from viam.proto.app.robot import ComponentConfig
 from viam.resource.base import ResourceBase
 from viam.resource.types import Model, ModelFamily
 from viam.utils import SensorReading, struct_to_dict
 from viam.logging import getLogger
+from viam.media.video import ViamImage
 
 LOGGER = getLogger(__name__)
 
@@ -26,6 +29,12 @@ class StockAlertEmail(Sensor):
         self.areas = []
         self.recipients = []
         
+        # Camera configuration
+        self.camera_name = ""
+        self.include_image = False
+        self.image_width = 640
+        self.image_height = 480
+        
         # Simplified scheduling
         self.weekdays_only = True
         self.check_times = []
@@ -35,12 +44,15 @@ class StockAlertEmail(Sensor):
         self.empty_areas = []
         self.total_alerts_sent = 0
         self.last_alert_time = None
+        self.last_image_path = None
         
         # State persistence and locking
         self.state_dir = os.path.join(os.path.expanduser("~"), ".stock-alert")
         self.state_file = os.path.join(self.state_dir, f"{name}.json")
         self.lock_file = os.path.join(self.state_dir, f"{name}.lock")
+        self.images_dir = os.path.join(self.state_dir, "images")
         os.makedirs(self.state_dir, exist_ok=True)
+        os.makedirs(self.images_dir, exist_ok=True)
         
         # Background task
         self._check_task = None
@@ -72,6 +84,7 @@ class StockAlertEmail(Sensor):
                             )
                             self.total_alerts_sent = state.get("total_alerts_sent", 0)
                             self.empty_areas = state.get("empty_areas", [])
+                            self.last_image_path = state.get("last_image_path")
                             
                         LOGGER.info(f"Loaded state from {self.state_file}: last_check_time={self.last_check_time}, " 
                                     f"last_alert_time={self.last_alert_time}, total_alerts_sent={self.total_alerts_sent}")
@@ -97,7 +110,8 @@ class StockAlertEmail(Sensor):
                         "last_check_time": self.last_check_time.isoformat() if self.last_check_time else None,
                         "last_alert_time": self.last_alert_time.isoformat() if self.last_alert_time else None,
                         "total_alerts_sent": self.total_alerts_sent,
-                        "empty_areas": self.empty_areas
+                        "empty_areas": self.empty_areas,
+                        "last_image_path": self.last_image_path
                     }
                     
                     # First write to a temporary file
@@ -140,8 +154,24 @@ class StockAlertEmail(Sensor):
         if not areas or not isinstance(areas, list):
             raise ValueError("areas must be a non-empty list of area identifiers")
         
-        # Return required dependencies - always include both
+        # Check camera configuration if enabled
+        include_image = attributes.get("include_image", False)
+        if include_image and not attributes.get("camera_name"):
+            raise ValueError("camera_name must be specified when include_image is true")
+        
+        # Return required dependencies
         deps = ["remote-1:langer_fill", "email"]
+        
+        # Add camera dependency if configured
+        if include_image and attributes.get("camera_name"):
+            camera_name = attributes.get("camera_name")
+            # If camera_name includes a remote name, use it directly
+            if ":" in camera_name:
+                deps.append(camera_name)
+            else:
+                # Otherwise, assume it's on remote-1
+                deps.append(f"remote-1:{camera_name}")
+        
         LOGGER.info(f"StockAlertEmail.validate_config returning dependencies: {deps}")
         return deps
     
@@ -159,6 +189,15 @@ class StockAlertEmail(Sensor):
         self.recipients = attributes.get("recipients", [])
         self.areas = attributes.get("areas", [])
         self.descriptor = attributes.get("descriptor", "Areas of Interest")
+        
+        # Camera configuration
+        self.include_image = attributes.get("include_image", False)
+        if isinstance(self.include_image, str):
+            self.include_image = self.include_image.lower() == "true"
+            
+        self.camera_name = attributes.get("camera_name", "")
+        self.image_width = int(attributes.get("image_width", 640))
+        self.image_height = int(attributes.get("image_height", 480))
         
         # Simplified scheduling configuration
         self.weekdays_only = attributes.get("weekdays_only", True)
@@ -207,6 +246,11 @@ class StockAlertEmail(Sensor):
         LOGGER.info(f"Check times: {', '.join(self.check_times)}")
         LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
         LOGGER.info(f"Will send alerts to: {', '.join(self.recipients)}")
+        
+        if self.include_image:
+            LOGGER.info(f"Will include images from camera: {self.camera_name}")
+        else:
+            LOGGER.info("Image capture disabled")
     
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
         """Get current sensor readings."""
@@ -215,7 +259,7 @@ class StockAlertEmail(Sensor):
         # Calculate next check time
         next_check = self._get_next_check_time(current_time)
         
-        return {
+        readings = {
             "empty_areas": self.empty_areas,
             "location": self.location,
             "last_check_time": str(self.last_check_time) if self.last_check_time else "never",
@@ -224,8 +268,15 @@ class StockAlertEmail(Sensor):
             "last_alert_time": str(self.last_alert_time) if self.last_alert_time else "never",
             "weekdays_only": self.weekdays_only,
             "check_times": self.check_times,
-            "areas_monitored": self.areas
+            "areas_monitored": self.areas,
+            "include_image": self.include_image
         }
+        
+        if self.include_image:
+            readings["camera_name"] = self.camera_name
+            readings["last_image_path"] = self.last_image_path
+        
+        return readings
     
     def _is_weekday(self, date: datetime.date) -> bool:
         """Check if the given date is a weekday (0=Monday, 6=Sunday)."""
@@ -282,8 +333,58 @@ class StockAlertEmail(Sensor):
         current_time_str = current_time.strftime("%H:%M")
         return current_time_str in self.check_times
     
+    async def capture_image(self) -> Optional[Dict[str, Any]]:
+        """Capture an image from the camera and save it to disk."""
+        if not self.include_image or not self.camera_name:
+            return None
+        
+        # Find camera in dependencies
+        camera = None
+        for name, resource in self.dependencies.items():
+            if isinstance(resource, Camera) and (
+                str(name) == self.camera_name or 
+                str(name).endswith(f":{self.camera_name}")
+            ):
+                camera = resource
+                break
+        
+        if not camera:
+            LOGGER.warning(f"Camera '{self.camera_name}' not found in dependencies")
+            return None
+        
+        try:
+            # Capture image
+            LOGGER.info(f"Capturing image from camera '{self.camera_name}'")
+            image = await camera.get_image(mime_type="image/jpeg")
+            
+            # Check if get_image returned a ViamImage
+            if isinstance(image, ViamImage):
+                # Get timestamp for filename
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{timestamp}_{self.name}.jpg"
+                image_path = os.path.join(self.images_dir, filename)
+                
+                # Save image to disk
+                await image.write_to_file(image_path)
+                self.last_image_path = image_path
+                LOGGER.info(f"Saved image to {image_path}")
+                
+                # Return information about the image
+                return {
+                    "path": image_path,
+                    "timestamp": timestamp,
+                    "mime_type": "image/jpeg"
+                }
+            else:
+                LOGGER.warning(f"Unexpected image type: {type(image)}")
+                return None
+                
+        except Exception as e:
+            LOGGER.error(f"Error capturing image: {e}")
+            return None
+    
     async def send_alert(self, empty_areas: List[str]):
-        """Send email alert for empty areas."""
+        """Send email alert for empty areas with optional image attachment."""
         # Find email service
         email_service = None
         for name, resource in self.dependencies.items():
@@ -294,6 +395,13 @@ class StockAlertEmail(Sensor):
         # Update state
         self.last_alert_time = datetime.datetime.now()
         self.total_alerts_sent += 1
+        
+        # Capture image if enabled
+        image_info = None
+        if self.include_image:
+            image_info = await self.capture_image()
+        
+        # Save state after image capture
         self._save_state()
         
         # If no email service, just log
@@ -311,16 +419,43 @@ class StockAlertEmail(Sensor):
             # Format the subject with location at the end
             subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
-            await email_service.do_command({
+            # Create email command
+            email_cmd = {
                 "command": "send",
                 "to": self.recipients,
                 "subject": subject,
-                "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
-
-Location: {self.location}
-Time: {timestamp}
-"""
-            })
+                "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)} 
+                Location: {self.location} 
+                Time: {timestamp}"""
+            }
+            
+            # Add image attachment if available
+            if image_info and os.path.exists(image_info["path"]):
+                try:
+                    # Read image file
+                    with open(image_info["path"], "rb") as f:
+                        image_data = f.read()
+                    
+                    # Encode as base64
+                    encoded_image = base64.b64encode(image_data).decode("utf-8")
+                    
+                    # Add attachments to email command
+                    email_cmd["attachments"] = [{
+                        "filename": os.path.basename(image_info["path"]),
+                        "content": encoded_image,
+                        "type": "image/jpeg",
+                        "disposition": "inline"
+                    }]
+                    
+                    # Update body to reference the image
+                    email_cmd["body"] += f"\nA snapshot of the area is attached to this email."
+                    
+                    LOGGER.info(f"Added image attachment: {os.path.basename(image_info['path'])}")
+                except Exception as e:
+                    LOGGER.error(f"Error attaching image to email: {e}")
+            
+            # Send the email
+            await email_service.do_command(email_cmd)
             
             LOGGER.info(f"Sent email alert to {len(self.recipients)} recipients")
         except Exception as e:
@@ -457,6 +592,27 @@ Time: {timestamp}
                 "check_times": self.check_times,
                 "next_check_time": str(next_check) if next_check else "none scheduled"
             }
+        
+        elif cmd == "capture_image":
+            # Force an image capture
+            if not self.include_image:
+                return {
+                    "status": "error",
+                    "message": "Image capture not enabled"
+                }
+            
+            image_info = await self.capture_image()
+            if image_info:
+                return {
+                    "status": "completed",
+                    "image_path": image_info["path"],
+                    "timestamp": image_info["timestamp"]
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": "Failed to capture image"
+                }
         
         else:
             return {

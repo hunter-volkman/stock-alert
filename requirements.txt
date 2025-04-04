@@ -1,3 +1,4 @@
 viam-sdk==0.43.1
 typing-extensions
 fasteners
+Pillow

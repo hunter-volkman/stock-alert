@@ -3,16 +3,17 @@
   "module_id": "hunter:stock-alert",
   "visibility": "public",
   "url": "https://github.com/hunter-volkman/stock-alert",
-  "description": "A module to monitor stock levels and send alerts (e.g., email) for empty areas of interest at scheduled intervals with configurable check times.",
+  "description": "A module to monitor stock levels and send alerts (e.g., email) for empty areas of interest at scheduled intervals with configurable check times. Can capture images when empty areas are detected.",
   "models": [
     {
       "api": "rdk:component:sensor",
       "model": "hunter:stock-alert:email",
-      "short_description": "Sends email alerts for empty areas of interest.",
+      "short_description": "Sends email alerts with optional camera snapshots for empty areas of interest.",
       "markdown_link": "README.md#model-hunterstock-alertemail",
       "requires": [
         {"name": "langer_fill", "type": "component", "subtype": "sensor"},
-        {"name": "email", "type": "service", "subtype": "generic"}
+        {"name": "email", "type": "service", "subtype": "generic"},
+        {"name": "camera", "type": "component", "subtype": "camera", "optional": true}
       ]
     }
   ],
