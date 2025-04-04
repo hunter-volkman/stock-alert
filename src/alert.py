@@ -240,11 +240,32 @@ class BaseStockAlert(Sensor):
         
         # Find the langer_fill sensor in dependencies
         fill_sensor = None
+        
+        # First check remotes
         for name, resource in self.dependencies.items():
             name_str = str(name)
-            if isinstance(resource, Sensor) and "langer_fill" in name_str:
-                fill_sensor = resource
-                break
+            if "remote-1" in name_str:
+                LOGGER.info(f"Found remote-1: {name_str}")
+                # Look for langer_fill within remote
+                try:
+                    # Try to access the langer_fill sensor through the remote
+                    fill_sensor = await resource.resource_names(Sensor.API)
+                    for sensor_name in fill_sensor:
+                        if "langer_fill" in str(sensor_name):
+                            fill_sensor = await resource.get_resource(Sensor.API, sensor_name)
+                            LOGGER.info(f"Found langer_fill sensor via remote: {sensor_name}")
+                            break
+                except Exception as e:
+                    LOGGER.error(f"Error accessing remote resources: {e}")
+        
+        # If not found through remote, try direct dependencies
+        if not fill_sensor:
+            for name, resource in self.dependencies.items():
+                name_str = str(name)
+                if isinstance(resource, Sensor) and "langer_fill" in name_str:
+                    fill_sensor = resource
+                    LOGGER.info(f"Found langer_fill sensor directly: {name_str}")
+                    break
         
         if not fill_sensor:
             LOGGER.warning(f"langer_fill sensor not available yet for {self.name}")
@@ -258,18 +279,24 @@ class BaseStockAlert(Sensor):
             # Debug the readings format
             LOGGER.debug(f"Received readings from langer_fill: {readings}")
             
-            # More robust handling of readings
+            # Handling for all known formats
+            empty_areas = []
+            
+            # Format 1: Readings inside a "readings" key
             if isinstance(readings, dict) and "readings" in readings:
-                # Original expected format
-                empty_areas = [k for k, v in readings["readings"].items() 
-                            if isinstance(v, (int, float)) and v == 0 and k in self.areas]
+                for area in self.areas:
+                    if area in readings["readings"]:
+                        level = readings["readings"].get(area)
+                        if isinstance(level, (int, float)) and level == 0:
+                            empty_areas.append(area)
+            
+            # Format 2: Flat dictionary
             elif isinstance(readings, dict):
-                # Alternative format - try to find readings at the top level
-                empty_areas = [k for k, v in readings.items() 
-                            if isinstance(v, (int, float)) and v == 0 and k in self.areas]
-            else:
-                LOGGER.error(f"Unexpected readings format: {type(readings)}")
-                empty_areas = []
+                for area in self.areas:
+                    if area in readings:
+                        level = readings.get(area)
+                        if isinstance(level, (int, float)) and level == 0:
+                            empty_areas.append(area)
             
             # Record empty areas in history with timestamp
             today = current_time.strftime("%Y-%m-%d")
@@ -289,7 +316,7 @@ class BaseStockAlert(Sensor):
             return empty_areas
             
         except Exception as e:
-            LOGGER.error(f"Error in perform_check: {e}")
+            LOGGER.error(f"Error in perform_check: {e}", exc_info=True)
             self.status = f"error: {str(e)}"
             return []
 
@@ -426,27 +453,16 @@ class StockAlertEmail(BaseStockAlert):
         if not isinstance(descriptor, str):
             raise ValueError("descriptor must be a string")
         
-        # Handle interval_minutes completely separately
-        if "interval_minutes" in attributes:
-            interval_value = attributes["interval_minutes"]
-            # Convert to int if it's a string
-            if isinstance(interval_value, str):
-                try:
-                    interval_value = int(interval_value)
-                    if interval_value < 1:
-                        raise ValueError("interval_minutes must be a positive integer")
-                except ValueError:
-                    raise ValueError("interval_minutes must be a positive integer")
-            # Check if it's an int
-            elif isinstance(interval_value, int):
-                if interval_value < 1:
-                    raise ValueError("interval_minutes must be a positive integer")
-            # If it's neither string nor int, raise error
-            else:
-                raise ValueError("interval_minutes must be a positive integer")
+        # Explicitly just check for interval_minutes in the protobuf structure
+        if "interval_minutes" in config.attributes.fields:
+            # It's there - don't even bother validating further
+            pass
         
-        # Return the required dependencies
-        return ["langer_fill", "sendgrid_email"]
+        # Return dependencies based on remote-1 being in the config
+        if any("remote-1" in str(dep) for dep in config.depends_on):
+            return ["remote-1"]
+        else:
+            return ["langer_fill", "sendgrid_email"]
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         """Configure the stock alert with updated settings."""
