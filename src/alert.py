@@ -163,28 +163,33 @@ class StockAlertEmail(Sensor):
         if isinstance(self.weekdays_only, str):
             self.weekdays_only = self.weekdays_only.lower() == "true"
         
-        # Combine all check times into a single list
-        self.check_times = []
-        
-        # Add morning check times
-        morning_times = attributes.get("morning_check_times", ["08:15", "08:30", "10:15", "10:30"])
-        self.check_times.extend(morning_times)
-        
-        # Generate afternoon check times
-        start_time = attributes.get("afternoon_start_time", "10:45")
-        end_time = attributes.get("afternoon_end_time", "15:00")
-        interval_minutes = int(attributes.get("interval_minutes", 15))
-        
-        # Generate times at regular intervals
-        try:
-            current = datetime.datetime.strptime(start_time, "%H:%M")
-            end = datetime.datetime.strptime(end_time, "%H:%M")
+        # Direct check times configuration
+        # First, check if check_times is provided
+        if "check_times" in attributes:
+            self.check_times = attributes["check_times"]
+        else:
+            # Backward compatibility with morning/afternoon style config
+            self.check_times = []
             
-            while current <= end:
-                self.check_times.append(current.strftime("%H:%M"))
-                current += datetime.timedelta(minutes=interval_minutes)
-        except Exception as e:
-            LOGGER.error(f"Error generating check times: {e}")
+            # Add morning check times
+            morning_times = attributes.get("morning_check_times", ["08:15", "08:30", "10:15", "10:30"])
+            self.check_times.extend(morning_times)
+            
+            # Generate afternoon check times
+            start_time = attributes.get("afternoon_start_time", "10:45")
+            end_time = attributes.get("afternoon_end_time", "15:00")
+            interval_minutes = int(attributes.get("interval_minutes", 15))
+            
+            # Generate times at regular intervals
+            try:
+                current = datetime.datetime.strptime(start_time, "%H:%M")
+                end = datetime.datetime.strptime(end_time, "%H:%M")
+                
+                while current <= end:
+                    self.check_times.append(current.strftime("%H:%M"))
+                    current += datetime.timedelta(minutes=interval_minutes)
+            except Exception as e:
+                LOGGER.error(f"Error generating check times: {e}")
         
         # Sort and deduplicate
         self.check_times = sorted(list(set(self.check_times)))
