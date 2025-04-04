@@ -219,7 +219,7 @@ class StockAlertEmail(Sensor):
             "empty_areas": self.empty_areas,
             "location": self.location,
             "last_check_time": str(self.last_check_time) if self.last_check_time else "never",
-            "next_scheduled_check": str(next_check) if next_check else "none scheduled",
+            "next_check_time": str(next_check) if next_check else "none scheduled",
             "total_alerts_sent": self.total_alerts_sent,
             "last_alert_time": str(self.last_alert_time) if self.last_alert_time else "never",
             "weekdays_only": self.weekdays_only,
@@ -455,7 +455,7 @@ Time: {timestamp}
                 "status": "completed", 
                 "weekdays_only": self.weekdays_only,
                 "check_times": self.check_times,
-                "next_scheduled_check": str(next_check) if next_check else "none scheduled"
+                "next_check_time": str(next_check) if next_check else "none scheduled"
             }
         
         else:
