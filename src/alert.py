@@ -438,8 +438,8 @@ class StockAlertEmail(BaseStockAlert):
             # It's there - don't even bother validating further
             pass
         
-        # Return the concrete dependencies
-        return ["remote-1:langer_fill", "email"]
+        # Only return the langer_fill dependency - make email optional
+        return ["remote-1:langer_fill"]
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         """Configure the stock alert with updated settings."""
@@ -557,19 +557,40 @@ class StockAlertEmail(BaseStockAlert):
         for name, resource in self.dependencies.items():
             # Convert name to string before using string operations
             name_str = str(name)
-            if isinstance(resource, Generic) and "sendgrid_email" in name_str:
+            if isinstance(resource, Generic) and ("email" in name_str or "sendgrid" in name_str):
                 email_service = resource
+                LOGGER.info(f"Found email service: {name_str}")
                 break
-                
+                    
+        # Update state regardless of whether we find an email service
+        self.last_alert_time = datetime.datetime.now()
+        self.total_alerts_sent += 1
+        
+        # Record the alert in history
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
+        
+        # Add to email history
+        self.email_history.append({
+            "timestamp": timestamp,
+            "recipients": self.recipients,
+            "subject": subject,
+            "empty_areas": empty_areas,
+            "sent": email_service is not None
+        })
+        
+        # Save state
+        self._save_state()
+        
+        # If we didn't find an email service, just log it
         if not email_service:
-            LOGGER.warning(f"sendgrid_email service not available for {self.name}, skipping alert")
+            LOGGER.warning(f"No email service available, logging alert only: {subject}")
+            LOGGER.info(f"Would send to: {', '.join(self.recipients)}")
+            LOGGER.info(f"Alert content: The following {self.descriptor.lower()} are empty and need attention: {', '.join(empty_areas)}")
             return
         
+        # Otherwise, try to send the email
         try:
-            subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
-            
-            # Log the alert
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             LOGGER.info(f"Sending email alert at {timestamp} for empty {self.descriptor.lower()}: {', '.join(empty_areas)}")
             
             # Send the email
@@ -579,25 +600,10 @@ class StockAlertEmail(BaseStockAlert):
                 "subject": subject,
                 "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(empty_areas)}
 
-Location: {self.location}
-Time: {timestamp}
-"""
+    Location: {self.location}
+    Time: {timestamp}
+    """
             }, timeout=10)
-            
-            # Update state
-            self.last_alert_time = datetime.datetime.now()
-            self.total_alerts_sent += 1
-            
-            # Record in history
-            self.email_history.append({
-                "timestamp": timestamp,
-                "recipients": self.recipients,
-                "subject": subject,
-                "empty_areas": empty_areas
-            })
-            
-            # Save state after successful alert
-            self._save_state()
             
             LOGGER.info(f"Successfully sent email alert to {len(self.recipients)} recipients")
         except Exception as e:
