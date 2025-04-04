@@ -238,34 +238,14 @@ class BaseStockAlert(Sensor):
         current_time = datetime.datetime.now()
         empty_areas = []
         
-        # Find the langer_fill sensor in dependencies
+        # Find the langer_fill sensor in dependencies - much simpler approach
         fill_sensor = None
-        
-        # First check remotes
         for name, resource in self.dependencies.items():
             name_str = str(name)
-            if "remote-1" in name_str:
-                LOGGER.info(f"Found remote-1: {name_str}")
-                # Look for langer_fill within remote
-                try:
-                    # Try to access the langer_fill sensor through the remote
-                    fill_sensor = await resource.resource_names(Sensor.API)
-                    for sensor_name in fill_sensor:
-                        if "langer_fill" in str(sensor_name):
-                            fill_sensor = await resource.get_resource(Sensor.API, sensor_name)
-                            LOGGER.info(f"Found langer_fill sensor via remote: {sensor_name}")
-                            break
-                except Exception as e:
-                    LOGGER.error(f"Error accessing remote resources: {e}")
-        
-        # If not found through remote, try direct dependencies
-        if not fill_sensor:
-            for name, resource in self.dependencies.items():
-                name_str = str(name)
-                if isinstance(resource, Sensor) and "langer_fill" in name_str:
-                    fill_sensor = resource
-                    LOGGER.info(f"Found langer_fill sensor directly: {name_str}")
-                    break
+            if "langer_fill" in name_str:
+                fill_sensor = resource
+                LOGGER.info(f"Found langer_fill sensor: {name_str}")
+                break
         
         if not fill_sensor:
             LOGGER.warning(f"langer_fill sensor not available yet for {self.name}")
@@ -279,22 +259,22 @@ class BaseStockAlert(Sensor):
             # Debug the readings format
             LOGGER.debug(f"Received readings from langer_fill: {readings}")
             
-            # Handling for all known formats
+            # Simplified handling for all known formats
             empty_areas = []
             
-            # Format 1: Readings inside a "readings" key
-            if isinstance(readings, dict) and "readings" in readings:
+            # Handle readings directly at the top level (flat dictionary)
+            if isinstance(readings, dict):
                 for area in self.areas:
-                    if area in readings["readings"]:
-                        level = readings["readings"].get(area)
-                        if isinstance(level, (int, float)) and level == 0:
-                            empty_areas.append(area)
-            
-            # Format 2: Flat dictionary
-            elif isinstance(readings, dict):
-                for area in self.areas:
+                    # Check if area exists in readings directly
                     if area in readings:
                         level = readings.get(area)
+                        LOGGER.debug(f"Area {area} has level: {level}")
+                        if isinstance(level, (int, float)) and level == 0:
+                            empty_areas.append(area)
+                    # Check if area exists in a nested "readings" structure
+                    elif "readings" in readings and area in readings["readings"]:
+                        level = readings["readings"].get(area)
+                        LOGGER.debug(f"Area {area} has level (nested): {level}")
                         if isinstance(level, (int, float)) and level == 0:
                             empty_areas.append(area)
             
@@ -458,11 +438,8 @@ class StockAlertEmail(BaseStockAlert):
             # It's there - don't even bother validating further
             pass
         
-        # Return dependencies based on remote-1 being in the config
-        if any("remote-1" in str(dep) for dep in config.depends_on):
-            return ["remote-1"]
-        else:
-            return ["langer_fill", "sendgrid_email"]
+        # Return the concrete dependencies
+        return ["remote-1:langer_fill", "email"]
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         """Configure the stock alert with updated settings."""
