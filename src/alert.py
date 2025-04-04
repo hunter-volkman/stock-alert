@@ -1,7 +1,7 @@
 import asyncio
 import datetime
-import os
 import json
+import os
 import fasteners
 from typing import Mapping, Optional, Any, List
 from viam.module.module import Module
@@ -15,426 +15,116 @@ from viam.logging import getLogger
 
 LOGGER = getLogger(__name__)
 
-class BaseStockAlert(Sensor):
-    """Base class for stock alert implementations."""
-    def __init__(self, name: str):
-        super().__init__(name)
-        self.dependencies = {}
-        self.location = ""  # Location of the stock monitoring
-        self.descriptor = "Areas of Interest"  # Default descriptor
-        self.areas = []  # List of specific areas of interest
-        
-        # Scheduling parameters
-        self.weekdays_only = True  # Default to weekdays only
-        
-        # Fixed scheduled check times in "HH:MM" format for morning
-        self.morning_check_times = ["08:15", "08:30", "10:15", "10:30"]
-        
-        # Afternoon scheduling
-        self.afternoon_start_time = "10:45"
-        self.afternoon_end_time = "15:00"
-        self.interval_minutes = 15
-        
-        # Generated list of all check times for today
-        self.today_check_times = []
-        
-        # Monitoring state
-        self.last_check_time = None
-        self.empty_areas_history = {}
-        self.total_alerts_sent = 0
-        self.last_alert_time = None
-        self.status = "initializing"
-        
-        # Persistence and locking
-        self.base_dir = "/home/hunter.volkman/stock-alert"
-        self.state_file = os.path.join(self.base_dir, f"state_{name}.json")
-        self.lock_file = os.path.join(self.base_dir, f"lockfile_{name}")
-        self._check_task = None
-        
-        # Setup directory structure
-        os.makedirs(self.base_dir, exist_ok=True)
-        self._load_state()
-
-    def _load_state(self):
-        """Load persistent state from file."""
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, "r") as f:
-                    state = json.load(f)
-                    self.last_check_time = (
-                        datetime.datetime.fromisoformat(state["last_check_time"])
-                        if state.get("last_check_time")
-                        else None
-                    )
-                    self.last_alert_time = (
-                        datetime.datetime.fromisoformat(state["last_alert_time"])
-                        if state.get("last_alert_time")
-                        else None
-                    )
-                    self.total_alerts_sent = state.get("total_alerts_sent", 0)
-                    self.empty_areas_history = state.get("empty_areas_history", {})
-                LOGGER.info(f"Loaded state from {self.state_file}: last_check_time={self.last_check_time}, last_alert_time={self.last_alert_time}, total_alerts_sent={self.total_alerts_sent}")
-            except Exception as e:
-                LOGGER.error(f"Error loading state: {e}")
-        else:
-            LOGGER.info(f"No state file at {self.state_file}, starting fresh")
-
-    def _save_state(self):
-        """Save state to file for persistence across restarts."""
-        try:
-            state = {
-                "last_check_time": self.last_check_time.isoformat() if self.last_check_time else None,
-                "last_alert_time": self.last_alert_time.isoformat() if self.last_alert_time else None,
-                "total_alerts_sent": self.total_alerts_sent,
-                "empty_areas_history": self.empty_areas_history
-            }
-            with open(self.state_file, "w") as f:
-                json.dump(state, f)
-            LOGGER.info(f"Saved state to {self.state_file}")
-        except Exception as e:
-            LOGGER.error(f"Error saving state: {e}")
-
-    async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
-        """Get current sensor readings including monitor status and empty areas."""
-        current_time = datetime.datetime.now()
-        today = current_time.date()
-        
-        # Update scheduling status
-        is_weekday = self._is_weekday(today)
-        is_within_hours = False
-        
-        if is_weekday or not self.weekdays_only:
-            current_time_str = current_time.strftime("%H:%M")
-            is_within_hours = any(time_str == current_time_str for time_str in self.today_check_times)
-        
-        # Get next scheduled check
-        next_check = self._get_next_check_time(current_time)
-        
-        # Comprehensive readings
-        return {
-            "empty_areas": list(self.empty_areas_history.get(today.strftime("%Y-%m-%d"), [])),
-            "status": self.status,
-            "location": self.location,
-            "last_check_time": str(self.last_check_time) if self.last_check_time else "never",
-            "next_scheduled_check": str(next_check) if next_check else "none scheduled",
-            "total_alerts_sent": self.total_alerts_sent,
-            "last_alert_time": str(self.last_alert_time) if self.last_alert_time else "never",
-            "weekdays_only": self.weekdays_only,
-            "is_weekday": is_weekday,
-            "today_check_times": self.today_check_times,
-            "areas_monitored": self.areas,
-            "pid": os.getpid()
-        }
-
-    def _is_within_operating_hours(self, current_time: datetime.datetime) -> bool:
-        """Determine if current time is within operating hours."""
-        try:
-            # If it's a weekend and we only check on weekdays, return False
-            if self.weekdays_only and not self._is_weekday(current_time.date()):
-                return False
-                
-            # Check if current time is in today's check times
-            current_time_str = current_time.strftime("%H:%M")
-            
-            # Make sure we have today's check times
-            if not self.today_check_times:
-                self._generate_todays_check_times()
-                
-            return current_time_str in self.today_check_times
-        except Exception as e:
-            LOGGER.error(f"Error checking operating hours: {e}")
-            return True  # Default to active if there's an error
-
-    def _get_next_check_time(self, current_time: datetime.datetime) -> Optional[datetime.datetime]:
-        """Find the next scheduled check time from now."""
-        today = current_time.date()
-        tomorrow = today + datetime.timedelta(days=1)
-        
-        # If it's a weekend and we only check on weekdays, find the next weekday
-        if self.weekdays_only and not self._is_weekday(today):
-            days_to_add = 1
-            next_day = today + datetime.timedelta(days=days_to_add)
-            while not self._is_weekday(next_day):
-                days_to_add += 1
-                next_day = today + datetime.timedelta(days=days_to_add)
-            
-            # Set to the first check time on the next weekday
-            self._generate_todays_check_times()  # Regenerate for the correct day
-            if not self.today_check_times:
-                return None
-                
-            next_time_str = self.today_check_times[0]
-            hour, minute = map(int, next_time_str.split(":"))
-            return datetime.datetime.combine(next_day, datetime.time(hour, minute))
-        
-        # Try to find next check time today
-        current_time_str = current_time.strftime("%H:%M")
-        
-        # Regenerate today's check times if needed (e.g., after midnight)
-        if not self.today_check_times:
-            self._generate_todays_check_times()
-        
-        # Find the next check time today
-        for time_str in self.today_check_times:
-            if time_str > current_time_str:
-                hour, minute = map(int, time_str.split(":"))
-                return datetime.datetime.combine(today, datetime.time(hour, minute))
-        
-        # If we're past all check times for today, look at tomorrow
-        tomorrow = today + datetime.timedelta(days=1)
-        
-        # If tomorrow is a weekend and we only check weekdays, find the next weekday
-        if self.weekdays_only:
-            days_to_add = 1
-            next_day = today + datetime.timedelta(days=days_to_add)
-            while not self._is_weekday(next_day):
-                days_to_add += 1
-                next_day = today + datetime.timedelta(days=days_to_add)
-            tomorrow = next_day
-        
-        # Generate check times for the next day
-        next_day_check_times = []
-        
-        # We need to temporarily change the today_check_times list
-        saved_check_times = self.today_check_times
-        self._generate_todays_check_times()
-        next_day_check_times = self.today_check_times
-        self.today_check_times = saved_check_times
-        
-        if not next_day_check_times:
-            return None
-            
-        # Get the first check time for tomorrow
-        time_str = next_day_check_times[0]
-        hour, minute = map(int, time_str.split(":"))
-        return datetime.datetime.combine(tomorrow, datetime.time(hour, minute))
-    
-    def _is_scheduled_check_time(self, current_time: datetime.datetime) -> bool:
-        """Check if the current time is a scheduled check time."""
-        today = current_time.date()
-        
-        # Skip weekends if weekdays_only is True
-        if self.weekdays_only and not self._is_weekday(today):
-            return False
-        
-        # Check if the current time matches any scheduled check time
-        current_time_str = current_time.strftime("%H:%M")
-        
-        # Regenerate check times if needed
-        if not self.today_check_times:
-            self._generate_todays_check_times()
-        
-        return current_time_str in self.today_check_times
-
-    async def send_alert(self, empty_areas: List[str]):
-        """Send alert for empty areas - implemented by subclasses."""
-        self.last_alert_time = datetime.datetime.now()
-        self.total_alerts_sent += 1
-        self._save_state()
-        raise NotImplementedError("Subclasses must implement send_alert")
-
-    async def perform_check(self):
-        """Perform actual check for empty areas."""
-        current_time = datetime.datetime.now()
-        empty_areas = []
-        
-        # Find the langer_fill sensor in dependencies
-        fill_sensor = None
-        for name, resource in self.dependencies.items():
-            name_str = str(name)
-            if "langer_fill" in name_str:
-                fill_sensor = resource
-                LOGGER.info(f"Found langer_fill sensor: {name_str}")
-                break
-        
-        if not fill_sensor:
-            LOGGER.warning(f"langer_fill sensor not available yet for {self.name}")
-            self.status = "waiting_for_dependency"
-            return empty_areas
-        
-        try:
-            LOGGER.info(f"Checking stock levels for {self.name}")
-            readings = await fill_sensor.get_readings()
-            
-            # Log the entire readings structure
-            LOGGER.info(f"Received readings from langer_fill: {readings}")
-            
-            # Log readings for each monitored area
-            for area in self.areas:
-                area_reading = None
-                
-                # Try direct access first
-                if area in readings:
-                    area_reading = readings[area]
-                    LOGGER.info(f"Area {area} reading: {area_reading}")
-                # Try nested structure if direct access failed
-                elif isinstance(readings, dict) and "readings" in readings and area in readings["readings"]:
-                    area_reading = readings["readings"][area]
-                    LOGGER.info(f"Area {area} reading (nested): {area_reading}")
-                else:
-                    LOGGER.warning(f"Area {area} not found in readings")
-            
-            # Simplified handling for all known formats
-            empty_areas = []
-            
-            # Handle readings directly at the top level (flat dictionary)
-            if isinstance(readings, dict):
-                for area in self.areas:
-                    # Check if area exists in readings directly
-                    if area in readings:
-                        level = readings.get(area)
-                        if isinstance(level, (int, float)) and level == 0:
-                            empty_areas.append(area)
-                            LOGGER.info(f"Area {area} is EMPTY (level={level})")
-                        else:
-                            LOGGER.info(f"Area {area} is NOT empty (level={level})")
-                    # Check if area exists in a nested "readings" structure
-                    elif "readings" in readings and area in readings["readings"]:
-                        level = readings["readings"].get(area)
-                        if isinstance(level, (int, float)) and level == 0:
-                            empty_areas.append(area)
-                            LOGGER.info(f"Area {area} is EMPTY (nested level={level})")
-                        else:
-                            LOGGER.info(f"Area {area} is NOT empty (nested level={level})")
-            
-            # Record empty areas in history with timestamp
-            today = current_time.strftime("%Y-%m-%d")
-            self.empty_areas_history[today] = empty_areas
-            self.last_check_time = current_time
-            self.status = "active"
-            
-            # Trigger alert if needed
-            if empty_areas:
-                LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
-                await self.send_alert(empty_areas)
-            else:
-                LOGGER.info("No empty areas found during check")
-            
-            # Save state after successful check
-            self._save_state()
-            return empty_areas
-            
-        except Exception as e:
-            LOGGER.error(f"Error in perform_check: {e}", exc_info=True)
-            self.status = f"error: {str(e)}"
-            return []
-
-    async def run_checks_loop(self):
-        """Run checks at specific scheduled times with process locking."""
-        # Use fasteners to ensure only one instance runs the scheduled loop
-        lock = fasteners.InterProcessLock(self.lock_file)
-        if not lock.acquire(blocking=False):
-            LOGGER.info(f"Another instance of {self.name} is already running the check loop (PID {os.getpid()})")
-            return
-            
-        task_id = id(asyncio.current_task())
-        LOGGER.info(f"Starting scheduled checks loop for {self.name} (task id: {task_id}, PID: {os.getpid()})")
-        
-        try:
-            # Ensure we have today's check times
-            self._generate_todays_check_times()
-            
-            while True:
-                # Get current time and next check time
-                current_time = datetime.datetime.now()
-                next_check = self._get_next_check_time(current_time)
-                
-                if next_check is None:
-                    # No check times configured, sleep for 1 hour and retry
-                    LOGGER.warning(f"No check times configured for {self.name}, sleeping for 1 hour")
-                    await asyncio.sleep(3600)
-                    self._generate_todays_check_times()  # Try to regenerate
-                    continue
-                
-                # Calculate sleep time
-                sleep_seconds = (next_check - current_time).total_seconds()
-                
-                if sleep_seconds <= 0:
-                    # We're already past the check time, so run now
-                    LOGGER.info(f"Already past scheduled check time {next_check}, running now")
-                    await self.perform_check()
-                    
-                    # Sleep 60 seconds to avoid rapid rechecking
-                    await asyncio.sleep(60)
-                    continue
-                
-                # Generate a short message with next check info
-                next_day = "today"
-                if next_check.date() > current_time.date():
-                    next_day = next_check.strftime("%Y-%m-%d")
-                    
-                LOGGER.info(f"Next check scheduled for {next_check.strftime('%H:%M')} {next_day} (sleeping {sleep_seconds:.1f} seconds)")
-                
-                # Sleep in smaller chunks to be more responsive to cancellation
-                remaining = sleep_seconds
-                while remaining > 0:
-                    chunk = min(remaining, 30)  # 30 second chunks
-                    await asyncio.sleep(chunk)
-                    remaining -= chunk
-                    
-                    # Check if task is being cancelled
-                    if asyncio.current_task().cancelled():
-                        LOGGER.info(f"Check loop for {self.name} was cancelled during sleep")
-                        raise asyncio.CancelledError()
-                        
-                    # Occasionally check if we need to regenerate today's check times
-                    # (e.g., if we've crossed midnight)
-                    if remaining % 300 < 30:  # Every ~5 minutes
-                        now = datetime.datetime.now()
-                        if now.date() > current_time.date():
-                            LOGGER.info("New day detected, regenerating check times")
-                            self._generate_todays_check_times()
-                            # Recalculate next check time
-                            break
-                
-                # Regenerate today's check times if we've crossed midnight
-                now = datetime.datetime.now()
-                if now.date() > current_time.date():
-                    LOGGER.info("New day detected, regenerating check times")
-                    self._generate_todays_check_times()
-                    continue
-                
-                # Run check if it's time
-                if self._is_scheduled_check_time(datetime.datetime.now()):
-                    LOGGER.info(f"Running scheduled check for {self.name} at {datetime.datetime.now()}")
-                    await self.perform_check()
-                else:
-                    LOGGER.info(f"Current time is not a scheduled check time, skipping")
-                
-                # Small gap between checks to prevent rapid consecutive executions
-                await asyncio.sleep(2)
-                
-        except asyncio.CancelledError:
-            LOGGER.info(f"Check loop for {self.name} (task id: {task_id}) was cancelled")
-            raise
-        except Exception as e:
-            LOGGER.error(f"Error in check loop for {self.name}: {e}")
-            await asyncio.sleep(60)  # Sleep and then try to restart
-        finally:
-            # Make sure we release the lock
-            lock.release()
-            LOGGER.info(f"Released lock for {self.name}, check loop exiting (PID: {os.getpid()})")
-
-class StockAlertEmail(BaseStockAlert):
+class StockAlertEmail(Sensor):
     MODEL = Model(ModelFamily("hunter", "stock-alert"), "email")
     
     def __init__(self, name: str):
         super().__init__(name)
+        self.dependencies = {}
+        self.location = ""
+        self.descriptor = "Areas of Interest"
+        self.areas = []
         self.recipients = []
-        self.email_history = []  # Track sent emails
         
+        # Simplified scheduling
+        self.weekdays_only = True
+        self.check_times = []
+        
+        # State
+        self.last_check_time = None
+        self.empty_areas = []
+        self.total_alerts_sent = 0
+        self.last_alert_time = None
+        
+        # State persistence and locking
+        self.state_dir = os.path.join(os.path.expanduser("~"), ".stock-alert")
+        self.state_file = os.path.join(self.state_dir, f"{name}.json")
+        self.lock_file = os.path.join(self.state_dir, f"{name}.lock")
+        os.makedirs(self.state_dir, exist_ok=True)
+        
+        # Background task
+        self._check_task = None
+        
+        # Load state
+        self._load_state()
+    
+    def _load_state(self):
+        """Load persistent state from file with locking."""
+        if os.path.exists(self.state_file):
+            # Use a file lock to ensure safe reads
+            lock = fasteners.InterProcessLock(f"{self.state_file}.lock")
+            
+            try:
+                # Acquire the lock with a timeout
+                if lock.acquire(blocking=True, timeout=5):
+                    try:
+                        with open(self.state_file, "r") as f:
+                            state = json.load(f)
+                            self.last_check_time = (
+                                datetime.datetime.fromisoformat(state["last_check_time"])
+                                if state.get("last_check_time")
+                                else None
+                            )
+                            self.last_alert_time = (
+                                datetime.datetime.fromisoformat(state["last_alert_time"])
+                                if state.get("last_alert_time")
+                                else None
+                            )
+                            self.total_alerts_sent = state.get("total_alerts_sent", 0)
+                            self.empty_areas = state.get("empty_areas", [])
+                            
+                        LOGGER.info(f"Loaded state from {self.state_file}: last_check_time={self.last_check_time}, " 
+                                    f"last_alert_time={self.last_alert_time}, total_alerts_sent={self.total_alerts_sent}")
+                    finally:
+                        lock.release()
+                else:
+                    LOGGER.warning(f"Could not acquire lock to load state for {self.name}")
+            except Exception as e:
+                LOGGER.error(f"Error loading state: {e}")
+        else:
+            LOGGER.info(f"No state file at {self.state_file}, starting fresh")
+    
+    def _save_state(self):
+        """Save state to file for persistence across restarts using file locking."""
+        # Use a file lock to ensure safe writes
+        lock = fasteners.InterProcessLock(f"{self.state_file}.lock")
+        
+        try:
+            # Acquire the lock with a timeout
+            if lock.acquire(blocking=True, timeout=5):
+                try:
+                    state = {
+                        "last_check_time": self.last_check_time.isoformat() if self.last_check_time else None,
+                        "last_alert_time": self.last_alert_time.isoformat() if self.last_alert_time else None,
+                        "total_alerts_sent": self.total_alerts_sent,
+                        "empty_areas": self.empty_areas
+                    }
+                    
+                    # First write to a temporary file
+                    temp_file = f"{self.state_file}.tmp"
+                    with open(temp_file, "w") as f:
+                        json.dump(state, f)
+                    
+                    # Then atomically replace the original file
+                    os.replace(temp_file, self.state_file)
+                    
+                    LOGGER.debug(f"Saved state to {self.state_file}")
+                finally:
+                    lock.release()
+            else:
+                LOGGER.warning(f"Could not acquire lock to save state for {self.name}")
+        except Exception as e:
+            LOGGER.error(f"Error saving state: {e}")
+    
     @classmethod
     def new(cls, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]) -> "StockAlertEmail":
-        LOGGER.info(f"Creating new StockAlertEmail with config: {config}")
-        LOGGER.info(f"Dependencies passed: {dependencies.keys()}")
-        
         alerter = cls(config.name)
-        LOGGER.info(f"Created new StockAlertEmail instance for {config.name} with PID {os.getpid()}")
         alerter.reconfigure(config, dependencies)
         return alerter
 
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> list[str]:
+        """Validate the configuration and return required dependencies."""
         if not config.attributes.fields["location"].string_value:
             raise ValueError("location must be specified")
         
@@ -442,34 +132,25 @@ class StockAlertEmail(BaseStockAlert):
         
         # Validate recipients
         recipients = attributes.get("recipients", [])
-        if not recipients or not isinstance(recipients, list) or not all(isinstance(r, str) for r in recipients):
+        if not recipients or not isinstance(recipients, list):
             raise ValueError("recipients must be a non-empty list of email addresses")
         
         # Validate areas
         areas = attributes.get("areas", [])
-        if not areas or not isinstance(areas, list) or not all(isinstance(a, str) for a in areas):
+        if not areas or not isinstance(areas, list):
             raise ValueError("areas must be a non-empty list of area identifiers")
         
-        # Validate descriptor
-        descriptor = attributes.get("descriptor", "Areas of Interest")
-        if not isinstance(descriptor, str):
-            raise ValueError("descriptor must be a string")
-        
-        # Explicitly just check for interval_minutes in the protobuf structure
-        if "interval_minutes" in config.attributes.fields:
-            # It's there - don't even bother validating further
-            pass
-        
-        deps = ["remote-1:langer_fill", "email"]
-        LOGGER.info(f"StockAlertEmail.validate_config returning dependencies: {deps}")
-        return deps
-
+        # Return required dependencies - simplified to just what we need
+        return ["remote-1:langer_fill", "email"]
+    
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         """Configure the stock alert with updated settings."""
+        # Cancel existing task if it exists
+        if self._check_task and not self._check_task.done():
+            self._check_task.cancel()
+        
         # Basic configuration
         self.location = config.attributes.fields["location"].string_value
-        
-        # Get attributes as dictionary
         attributes = struct_to_dict(config.attributes)
         
         # Configure alert settings
@@ -477,254 +158,291 @@ class StockAlertEmail(BaseStockAlert):
         self.areas = attributes.get("areas", [])
         self.descriptor = attributes.get("descriptor", "Areas of Interest")
         
-        # Configure scheduling
+        # Simplified scheduling configuration
         self.weekdays_only = attributes.get("weekdays_only", True)
         if isinstance(self.weekdays_only, str):
             self.weekdays_only = self.weekdays_only.lower() == "true"
+        
+        # Combine all check times into a single list
+        self.check_times = []
+        
+        # Add morning check times
+        morning_times = attributes.get("morning_check_times", ["08:15", "08:30", "10:15", "10:30"])
+        self.check_times.extend(morning_times)
+        
+        # Generate afternoon check times
+        start_time = attributes.get("afternoon_start_time", "10:45")
+        end_time = attributes.get("afternoon_end_time", "15:00")
+        interval_minutes = int(attributes.get("interval_minutes", 15))
+        
+        # Generate times at regular intervals
+        try:
+            current = datetime.datetime.strptime(start_time, "%H:%M")
+            end = datetime.datetime.strptime(end_time, "%H:%M")
             
-        # Override morning check times if provided
-        if "morning_check_times" in attributes:
-            self.morning_check_times = attributes["morning_check_times"]
+            while current <= end:
+                self.check_times.append(current.strftime("%H:%M"))
+                current += datetime.timedelta(minutes=interval_minutes)
+        except Exception as e:
+            LOGGER.error(f"Error generating check times: {e}")
         
-        # Configure afternoon schedule
-        afternoon_start = attributes.get("afternoon_start_time", "10:45")
-        afternoon_end = attributes.get("afternoon_end_time", "15:00")
-        
-        # Handle interval_minutes conversion
-        interval_minutes = attributes.get("interval_minutes", 15)
-        if isinstance(interval_minutes, str):
-            try:
-                interval_minutes = int(interval_minutes)
-            except ValueError:
-                LOGGER.warning(f"Invalid interval_minutes value '{interval_minutes}', using default of 15")
-                interval_minutes = 15
-        self.interval_minutes = interval_minutes
-        
-        self.afternoon_start_time = afternoon_start
-        self.afternoon_end_time = afternoon_end
-        
-        # Generate today's check times
-        self._generate_todays_check_times()
+        # Sort and deduplicate
+        self.check_times = sorted(list(set(self.check_times)))
         
         # Store dependencies
         self.dependencies = dependencies
-        LOGGER.info(f"Dependencies received for {self.name}: {list(self.dependencies.keys())}")
         
-        # Log configuration
+        # Start the monitoring loop
+        self._check_task = asyncio.create_task(self.run_checks_loop())
+        
         LOGGER.info(f"Configured {self.name} for location '{self.location}'")
         LOGGER.info(f"Weekdays only: {self.weekdays_only}")
-        LOGGER.info(f"Morning check times: {', '.join(self.morning_check_times)}")
-        LOGGER.info(f"Afternoon schedule: {self.afternoon_start_time} to {self.afternoon_end_time} every {self.interval_minutes} minutes")
-        LOGGER.info(f"Today's check times: {', '.join(self.today_check_times)}")
+        LOGGER.info(f"Check times: {', '.join(self.check_times)}")
         LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
         LOGGER.info(f"Will send alerts to: {', '.join(self.recipients)}")
+    
+    async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
+        """Get current sensor readings."""
+        current_time = datetime.datetime.now()
         
-        # Properly cancel existing task if it exists to prevent multiple loops
-        if hasattr(self, '_check_task') and self._check_task:
-            if not self._check_task.done() and not self._check_task.cancelled():
-                LOGGER.info(f"Cancelling existing check task for {self.name}: {self._check_task}")
-                self._check_task.cancel()
-                try:
-                    # Give the task a moment to cancel
-                    asyncio.get_event_loop().run_until_complete(
-                        asyncio.wait_for(asyncio.shield(self._check_task), 0.5)
-                    )
-                except (asyncio.CancelledError, asyncio.TimeoutError, RuntimeError):
-                    pass
+        # Calculate next check time
+        next_check = self._get_next_check_time(current_time)
         
-        # Start the monitoring loop in a background task
-        self._check_task = asyncio.create_task(self.run_checks_loop())
-        self._check_task.add_done_callback(
-            lambda task: LOGGER.info(f"Check task for {self.name} completed: {task}")
-        )
-        self.status = "configured"
+        return {
+            "empty_areas": self.empty_areas,
+            "location": self.location,
+            "last_check_time": str(self.last_check_time) if self.last_check_time else "never",
+            "next_scheduled_check": str(next_check) if next_check else "none scheduled",
+            "total_alerts_sent": self.total_alerts_sent,
+            "last_alert_time": str(self.last_alert_time) if self.last_alert_time else "never",
+            "weekdays_only": self.weekdays_only,
+            "check_times": self.check_times,
+            "areas_monitored": self.areas
+        }
     
     def _is_weekday(self, date: datetime.date) -> bool:
         """Check if the given date is a weekday (0=Monday, 6=Sunday)."""
         return date.weekday() < 5  # 0-4 are weekdays (Monday-Friday)
     
-    def _generate_todays_check_times(self):
-        """Generate a list of all check times for today."""
-        self.today_check_times = []
-        today = datetime.datetime.now().date()
+    def _get_next_check_time(self, current_time: datetime.datetime) -> Optional[datetime.datetime]:
+        """Find the next scheduled check time from now."""
+        today = current_time.date()
+        current_time_str = current_time.strftime("%H:%M")
         
-        # Skip weekend days if weekdays_only is True
+        # Skip weekends if weekdays_only is True
         if self.weekdays_only and not self._is_weekday(today):
-            LOGGER.info(f"Today ({today}) is a weekend, no checks scheduled")
-            return
-
-        # Add morning check times
-        self.today_check_times.extend(self.morning_check_times)
-        
-        # Generate afternoon check times at regular intervals
-        try:
-            start_time = datetime.datetime.strptime(self.afternoon_start_time, "%H:%M")
-            end_time = datetime.datetime.strptime(self.afternoon_end_time, "%H:%M")
+            # Find next weekday
+            days_ahead = 1
+            while not self._is_weekday(today + datetime.timedelta(days=days_ahead)):
+                days_ahead += 1
+            next_day = today + datetime.timedelta(days=days_ahead)
             
-            current_time = start_time
-            while current_time <= end_time:
-                time_str = current_time.strftime("%H:%M")
-                self.today_check_times.append(time_str)
-                current_time += datetime.timedelta(minutes=self.interval_minutes)
-        except Exception as e:
-            LOGGER.error(f"Error generating afternoon check times: {e}")
+            # Return first check time on next weekday
+            if self.check_times:
+                time_str = self.check_times[0]
+                hour, minute = map(int, time_str.split(":"))
+                return datetime.datetime.combine(next_day, datetime.time(hour, minute))
+            return None
         
-        # Sort and deduplicate all times
-        self.today_check_times = sorted(list(set(self.today_check_times)))
-        LOGGER.info(f"Generated {len(self.today_check_times)} check times for today")
-
+        # Find next check time today
+        for time_str in self.check_times:
+            if time_str > current_time_str:
+                hour, minute = map(int, time_str.split(":"))
+                return datetime.datetime.combine(today, datetime.time(hour, minute))
+        
+        # If no more today, get tomorrow's first time
+        tomorrow = today + datetime.timedelta(days=1)
+        
+        # Skip to next weekday if needed
+        if self.weekdays_only and not self._is_weekday(tomorrow):
+            days_ahead = 1
+            while not self._is_weekday(tomorrow + datetime.timedelta(days=days_ahead - 1)):
+                days_ahead += 1
+            tomorrow = today + datetime.timedelta(days=days_ahead)
+        
+        if self.check_times:
+            time_str = self.check_times[0]
+            hour, minute = map(int, time_str.split(":"))
+            return datetime.datetime.combine(tomorrow, datetime.time(hour, minute))
+        
+        return None
+    
+    def _is_check_time(self, current_time: datetime.datetime) -> bool:
+        """Check if the current time is a scheduled check time."""
+        if self.weekdays_only and not self._is_weekday(current_time.date()):
+            return False
+        
+        current_time_str = current_time.strftime("%H:%M")
+        return current_time_str in self.check_times
+    
     async def send_alert(self, empty_areas: List[str]):
-        """Send email alert for empty areas using SendGrid service."""
-        # Find SendGrid email service in dependencies
+        """Send email alert for empty areas."""
+        # Find email service
         email_service = None
         for name, resource in self.dependencies.items():
-            # Convert name to string before using string operations
-            name_str = str(name)
-            if isinstance(resource, Generic) and ("email" in name_str or "sendgrid" in name_str):
+            if isinstance(resource, Generic) and str(name).endswith("email"):
                 email_service = resource
-                LOGGER.info(f"Found email service: {name_str}")
                 break
-                    
-        # Update state regardless of whether we find an email service
+        
+        # Update state
         self.last_alert_time = datetime.datetime.now()
         self.total_alerts_sent += 1
-        
-        # Record the alert in history
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
-        
-        # Add to email history
-        self.email_history.append({
-            "timestamp": timestamp,
-            "recipients": self.recipients,
-            "subject": subject,
-            "empty_areas": empty_areas,
-            "sent": email_service is not None
-        })
-        
-        # Save state
         self._save_state()
         
-        # If we didn't find an email service, just log it
+        # If no email service, just log
         if not email_service:
-            LOGGER.warning(f"No email service available, logging alert only: {subject}")
-            LOGGER.info(f"Would send to: {', '.join(self.recipients)}")
-            LOGGER.info(f"Alert content: The following {self.descriptor.lower()} are empty and need attention: {', '.join(empty_areas)}")
+            LOGGER.warning(f"No email service available for {self.name}")
             return
         
-        # Otherwise, try to send the email
+        # Send the email
         try:
-            LOGGER.info(f"Sending email alert at {timestamp} for empty {self.descriptor.lower()}: {', '.join(empty_areas)}")
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            subject = f"{self.location} - Empty {self.descriptor}: {', '.join(empty_areas)}"
             
-            # Send the email
             await email_service.do_command({
                 "command": "send",
                 "to": self.recipients,
                 "subject": subject,
                 "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(empty_areas)}
 
-    Location: {self.location}
-    Time: {timestamp}
-    """
-            }, timeout=10)
+Location: {self.location}
+Time: {timestamp}
+"""
+            })
             
-            LOGGER.info(f"Successfully sent email alert to {len(self.recipients)} recipients")
+            LOGGER.info(f"Sent email alert to {len(self.recipients)} recipients")
         except Exception as e:
             LOGGER.error(f"Failed to send email alert: {e}")
-
+    
+    async def perform_check(self):
+        """Check for empty areas and send alerts if needed."""
+        # Find the fill sensor dependency
+        fill_sensor = None
+        for name, resource in self.dependencies.items():
+            if "langer_fill" in str(name):
+                fill_sensor = resource
+                break
+        
+        if not fill_sensor:
+            LOGGER.warning(f"langer_fill sensor not available for {self.name}")
+            return
+        
+        try:
+            # Get readings from fill sensor
+            readings = await fill_sensor.get_readings()
+            
+            # Find empty areas
+            empty_areas = []
+            for area in self.areas:
+                level = None
+                
+                # Try direct access first
+                if area in readings:
+                    level = readings[area]
+                # Try nested structure
+                elif isinstance(readings, dict) and "readings" in readings and area in readings["readings"]:
+                    level = readings["readings"][area]
+                
+                # Check if area is empty
+                if isinstance(level, (int, float)) and level == 0:
+                    empty_areas.append(area)
+            
+            # Update state
+            self.empty_areas = empty_areas
+            self.last_check_time = datetime.datetime.now()
+            self._save_state()
+            
+            # Send alert if needed
+            if empty_areas:
+                LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
+                await self.send_alert(empty_areas)
+            else:
+                LOGGER.info("No empty areas found")
+                
+        except Exception as e:
+            LOGGER.error(f"Error checking stock levels: {e}")
+    
+    async def run_checks_loop(self):
+        """Run the monitoring loop with process locking."""
+        # Use fasteners to ensure only one instance runs the scheduled loop
+        lock = fasteners.InterProcessLock(self.lock_file)
+        if not lock.acquire(blocking=False):
+            LOGGER.info(f"Another instance of {self.name} is already running the check loop (PID {os.getpid()})")
+            return
+        
+        LOGGER.info(f"Starting scheduled checks loop for {self.name} (PID: {os.getpid()})")
+        
+        try:
+            while True:
+                # Get current time
+                current_time = datetime.datetime.now()
+                
+                # Run check if it's time
+                if self._is_check_time(current_time):
+                    await self.perform_check()
+                
+                # Calculate sleep time to next check
+                next_check = self._get_next_check_time(current_time)
+                
+                if next_check:
+                    # Sleep until next check time or at most 60 seconds
+                    sleep_seconds = min(60, (next_check - current_time).total_seconds())
+                    if sleep_seconds <= 0:
+                        sleep_seconds = 60  # Default to 1 minute if calculation is negative
+                    
+                    LOGGER.info(f"Next check at {next_check.strftime('%H:%M')}, sleeping for {sleep_seconds:.1f} seconds")
+                    
+                    # Sleep in smaller chunks to be responsive to cancellation
+                    remaining = sleep_seconds
+                    while remaining > 0:
+                        chunk = min(remaining, 10)  # 10 second chunks
+                        await asyncio.sleep(chunk)
+                        remaining -= chunk
+                        
+                        # Check if task is being cancelled
+                        if asyncio.current_task().cancelled():
+                            raise asyncio.CancelledError()
+                else:
+                    # No scheduled checks, sleep for 5 minutes
+                    LOGGER.info(f"No scheduled checks for {self.name}, sleeping for 5 minutes")
+                    await asyncio.sleep(300)
+                
+        except asyncio.CancelledError:
+            LOGGER.info(f"Check loop cancelled for {self.name}")
+            raise
+        except Exception as e:
+            LOGGER.error(f"Error in check loop: {e}")
+            # Sleep for 1 minute on error before trying again
+            await asyncio.sleep(60)
+        finally:
+            # Make sure we release the lock
+            try:
+                lock.release()
+                LOGGER.info(f"Released lock for {self.name}, check loop exiting (PID: {os.getpid()})")
+            except Exception as e:
+                LOGGER.error(f"Error releasing lock: {e}")
+    
     async def do_command(self, command: dict, *, timeout: Optional[float] = None, **kwargs) -> dict:
-        """Handle custom commands for the sensor."""
+        """Handle custom commands."""
         cmd = command.get("command", "")
         
         if cmd == "check_now":
             # Force an immediate check
-            LOGGER.info(f"Received command to check now for {self.name}")
-            empty_areas = await self.perform_check()
+            await self.perform_check()
             return {
                 "status": "completed",
-                "empty_areas": empty_areas
-            }
-            
-        elif cmd == "get_schedule":
-            # Return today's check schedule
-            current_time = datetime.datetime.now()
-            today = current_time.date()
-            
-            # Regenerate today's schedule if needed
-            if not self.today_check_times:
-                self._generate_todays_check_times()
-                
-            # Calculate next check time
-            next_check = self._get_next_check_time(current_time)
-            next_check_str = str(next_check) if next_check else "None"
-            
-            return {
-                "status": "completed",
-                "is_weekday": self._is_weekday(today),
-                "weekdays_only": self.weekdays_only,
-                "morning_check_times": self.morning_check_times,
-                "afternoon_schedule": f"{self.afternoon_start_time} to {self.afternoon_end_time} every {self.interval_minutes} minutes",
-                "today_check_times": self.today_check_times,
-                "next_scheduled_check": next_check_str,
-                "current_time": current_time.strftime("%H:%M")
-            }
-            
-        elif cmd == "get_history":
-            # Return alert history
-            days = int(command.get("days", 1))
-            cutoff = datetime.datetime.now() - datetime.timedelta(days=days)
-            cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Filter history by date
-            filtered_history = [
-                entry for entry in self.email_history 
-                if entry["timestamp"] >= cutoff_str
-            ]
-            
-            return {
-                "status": "completed",
-                "history": filtered_history,
-                "days": days,
-                "count": len(filtered_history)
+                "empty_areas": self.empty_areas
             }
         
-        elif cmd == "debug_sensor":
-            # Debug the langer_fill sensor
-            results = {"status": "debug"}
-            try:
-                # Find fill sensor
-                fill_sensor = None
-                for name, resource in self.dependencies.items():
-                    name_str = str(name)
-                    if isinstance(resource, Sensor) and "langer_fill" in name_str:
-                        fill_sensor = resource
-                        results["found_sensor"] = True
-                        break
-                
-                if fill_sensor:
-                    # Get readings directly
-                    readings = await fill_sensor.get_readings()
-                    results["raw_readings"] = readings
-                    
-                    # Try to interpret readings for monitored areas
-                    if isinstance(readings, dict) and "readings" in readings:
-                        results["monitored_areas"] = {
-                            area: readings["readings"].get(area, "not found")
-                            for area in self.areas
-                        }
-                        
-                        # Count empty areas
-                        empty_areas = [k for k, v in readings["readings"].items() 
-                                    if isinstance(v, (int, float)) and v == 0 and k in self.areas]
-                        results["empty_areas"] = empty_areas
-                        results["empty_count"] = len(empty_areas)
-                    
-                else:
-                    results["found_sensor"] = False
-            except Exception as e:
-                results["error"] = str(e)
-            
-            return results
+        elif cmd == "get_schedule":
+            # Return check schedule
+            next_check = self._get_next_check_time(datetime.datetime.now())
+            return {
+                "status": "completed", 
+                "weekdays_only": self.weekdays_only,
+                "check_times": self.check_times,
+                "next_scheduled_check": str(next_check) if next_check else "none scheduled"
+            }
         
         else:
             return {
