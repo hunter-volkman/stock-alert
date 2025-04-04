@@ -140,8 +140,10 @@ class StockAlertEmail(Sensor):
         if not areas or not isinstance(areas, list):
             raise ValueError("areas must be a non-empty list of area identifiers")
         
-        # Return required dependencies - simplified to just what we need
-        return ["remote-1:langer_fill", "email"]
+        # Return required dependencies - always include both
+        deps = ["remote-1:langer_fill", "email"]
+        LOGGER.info(f"StockAlertEmail.validate_config returning dependencies: {deps}")
+        return deps
     
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         """Configure the stock alert with updated settings."""
