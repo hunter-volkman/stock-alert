@@ -425,6 +425,9 @@ class StockAlertEmail(BaseStockAlert):
         
     @classmethod
     def new(cls, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]) -> "StockAlertEmail":
+        LOGGER.info(f"Creating new StockAlertEmail with config: {config}")
+        LOGGER.info(f"Dependencies passed: {dependencies.keys()}")
+        
         alerter = cls(config.name)
         LOGGER.info(f"Created new StockAlertEmail instance for {config.name} with PID {os.getpid()}")
         alerter.reconfigure(config, dependencies)
@@ -457,8 +460,9 @@ class StockAlertEmail(BaseStockAlert):
             # It's there - don't even bother validating further
             pass
         
-        # Only return the langer_fill dependency - make email optional
-        return ["remote-1:langer_fill"]
+        deps = ["remote-1:langer_fill", "email"]
+        LOGGER.info(f"StockAlertEmail.validate_config returning dependencies: {deps}")
+        return deps
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         """Configure the stock alert with updated settings."""
