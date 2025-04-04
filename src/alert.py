@@ -338,15 +338,35 @@ class StockAlertEmail(Sensor):
         if not self.include_image or not self.camera_name:
             return None
         
-        # Find camera in dependencies
+        # Find camera in dependencies with improved matching
         camera = None
+        camera_name = self.camera_name.lower()  # Normalize to lowercase for comparison
+        
         for name, resource in self.dependencies.items():
-            if isinstance(resource, Camera) and (
-                str(name) == self.camera_name or 
-                str(name).endswith(f":{self.camera_name}")
-            ):
-                camera = resource
-                break
+            resource_name = str(name).lower()  # Normalize to lowercase
+            
+            # Check if this is a Camera resource
+            if isinstance(resource, Camera):
+                # Direct match
+                if resource_name == camera_name:
+                    camera = resource
+                    LOGGER.info(f"Found camera with direct match: {name}")
+                    break
+                # Match with remote prefix
+                elif resource_name.endswith(f":{camera_name}"):
+                    camera = resource
+                    LOGGER.info(f"Found camera with remote prefix: {name}")
+                    break
+                # Match camera name as the last part of resource name
+                elif resource_name.split(":")[-1] == camera_name:
+                    camera = resource
+                    LOGGER.info(f"Found camera from last part of name: {name}")
+                    break
+                # Partial match (in case of different naming conventions)
+                elif camera_name in resource_name:
+                    camera = resource
+                    LOGGER.info(f"Found camera with partial match: {name}")
+                    break
         
         if not camera:
             LOGGER.warning(f"Camera '{self.camera_name}' not found in dependencies")
@@ -357,15 +377,59 @@ class StockAlertEmail(Sensor):
             LOGGER.info(f"Capturing image from camera '{self.camera_name}'")
             image = await camera.get_image(mime_type="image/jpeg")
             
-            # Check if get_image returned a ViamImage
+            # Add detailed debug logging about the image object
+            LOGGER.info(f"Image type: {type(image)}")
+            if hasattr(image, '__dict__'):
+                LOGGER.info(f"Image attributes: {list(image.__dict__.keys())}")
+            elif isinstance(image, dict):
+                LOGGER.info(f"Image dict keys: {list(image.keys())}")
+            
+            # Log available methods
+            methods = [method for method in dir(image) if callable(getattr(image, method)) and not method.startswith('_')]
+            LOGGER.info(f"Available methods: {methods}")
+            
+            # Get the image data and handle various possible return types
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{timestamp}_{self.name}.jpg"
+            image_path = os.path.join(self.images_dir, filename)
+            
+            # Handle different possible return types from get_image
             if isinstance(image, ViamImage):
-                # Get timestamp for filename
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"{timestamp}_{self.name}.jpg"
-                image_path = os.path.join(self.images_dir, filename)
+                # For ViamImage objects, get the bytes
+                try:
+                    # If there's a get_bytes method
+                    if hasattr(image, 'get_bytes'):
+                        image_data = await image.get_bytes()
+                    # If there's a bytes attribute
+                    elif hasattr(image, 'bytes'):
+                        image_data = image.bytes
+                    # Or try to access the raw data directly as a fallback
+                    elif hasattr(image, 'data'):
+                        image_data = image.data
+                    else:
+                        # If we can't access the bytes, try converting to bytes
+                        if hasattr(image, 'to_bytes'):
+                            image_data = await image.to_bytes()
+                        else:
+                            raise AttributeError("Cannot access image data")
+                except Exception as e:
+                    LOGGER.error(f"Error accessing image data from ViamImage: {e}")
+                    return None
+            # Handle direct bytes return
+            elif isinstance(image, bytes):
+                image_data = image
+            # Handle possible dict return with bytes inside
+            elif isinstance(image, dict) and 'data' in image:
+                image_data = image['data']
+            # Unknown format
+            else:
+                LOGGER.warning(f"Unexpected image type: {type(image)}")
+                return None
                 
-                # Save image to disk
-                await image.write_to_file(image_path)
+            # Save image data to disk
+            try:
+                with open(image_path, "wb") as f:
+                    f.write(image_data)
                 self.last_image_path = image_path
                 LOGGER.info(f"Saved image to {image_path}")
                 
@@ -375,8 +439,8 @@ class StockAlertEmail(Sensor):
                     "timestamp": timestamp,
                     "mime_type": "image/jpeg"
                 }
-            else:
-                LOGGER.warning(f"Unexpected image type: {type(image)}")
+            except Exception as e:
+                LOGGER.error(f"Error saving image to file: {e}")
                 return None
                 
         except Exception as e:
@@ -424,9 +488,11 @@ class StockAlertEmail(Sensor):
                 "command": "send",
                 "to": self.recipients,
                 "subject": subject,
-                "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)} 
-                Location: {self.location} 
-                Time: {timestamp}"""
+                "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
+
+Location: {self.location}
+Time: {timestamp}
+"""
             }
             
             # Add image attachment if available
@@ -436,23 +502,29 @@ class StockAlertEmail(Sensor):
                     with open(image_info["path"], "rb") as f:
                         image_data = f.read()
                     
-                    # Encode as base64
-                    encoded_image = base64.b64encode(image_data).decode("utf-8")
-                    
-                    # Add attachments to email command
-                    email_cmd["attachments"] = [{
-                        "filename": os.path.basename(image_info["path"]),
-                        "content": encoded_image,
-                        "type": "image/jpeg",
-                        "disposition": "inline"
-                    }]
-                    
-                    # Update body to reference the image
-                    email_cmd["body"] += f"\nA snapshot of the area is attached to this email."
-                    
-                    LOGGER.info(f"Added image attachment: {os.path.basename(image_info['path'])}")
+                    # Check if we have valid image data
+                    if not image_data or len(image_data) < 100:  # Basic sanity check
+                        LOGGER.warning(f"Image file appears empty or corrupted: {image_info['path']}")
+                    else:
+                        # Encode as base64
+                        encoded_image = base64.b64encode(image_data).decode("utf-8")
+                        
+                        # Add attachments to email command
+                        email_cmd["attachments"] = [{
+                            "filename": os.path.basename(image_info["path"]),
+                            "content": encoded_image,
+                            "type": "image/jpeg",
+                            "disposition": "inline"
+                        }]
+                        
+                        # Update body to reference the image
+                        email_cmd["body"] += f"\nA snapshot of the area is attached to this email."
+                        
+                        LOGGER.info(f"Added image attachment: {os.path.basename(image_info['path'])}, size: {len(image_data)} bytes")
                 except Exception as e:
                     LOGGER.error(f"Error attaching image to email: {e}")
+                    # Continue sending the email without the image
+                    LOGGER.info("Continuing to send email without image attachment")
             
             # Send the email
             await email_service.do_command(email_cmd)
