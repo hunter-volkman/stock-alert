@@ -483,19 +483,15 @@ class StockAlertEmail(Sensor):
             # Format the subject with location at the end
             subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
-            # Create email command
-            email_cmd = {
-                "command": "send",
-                "to": self.recipients,
-                "subject": subject,
-                "body": f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
+            # Set up the base email content
+            body = f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
 
-Location: {self.location}
-Time: {timestamp}
-"""
-            }
-            
-            # Add image attachment if available
+    Location: {self.location}
+    Time: {timestamp}
+    """
+
+            # Process image attachment if available
+            attachments = []
             if image_info and os.path.exists(image_info["path"]):
                 try:
                     # Read image file
@@ -509,29 +505,49 @@ Time: {timestamp}
                         # Encode as base64
                         encoded_image = base64.b64encode(image_data).decode("utf-8")
                         
-                        # Add attachments to email command
-                        email_cmd["attachments"] = [{
+                        # Create attachment object
+                        attachments.append({
                             "filename": os.path.basename(image_info["path"]),
                             "content": encoded_image,
                             "type": "image/jpeg",
-                            "disposition": "inline"
-                        }]
+                            "disposition": "attachment"  # Changed to "attachment" instead of "inline"
+                        })
                         
-                        # Update body to reference the image
-                        email_cmd["body"] += f"\nA snapshot of the area is attached to this email."
+                        # Modify body to mention the attachment
+                        body += f"\nA snapshot of the area is attached to this email."
                         
                         LOGGER.info(f"Added image attachment: {os.path.basename(image_info['path'])}, size: {len(image_data)} bytes")
                 except Exception as e:
                     LOGGER.error(f"Error attaching image to email: {e}")
-                    # Continue sending the email without the image
                     LOGGER.info("Continuing to send email without image attachment")
             
-            # Send the email
-            await email_service.do_command(email_cmd)
+            # Create the complete email command with all components
+            email_cmd = {
+                "command": "send",
+                "to": self.recipients,
+                "subject": subject,
+                "body": body
+            }
             
+            # Only add attachments if we have any
+            if attachments:
+                email_cmd["attachments"] = attachments
+                
+                # Log the full command structure for debugging
+                LOGGER.info(f"Email command structure: {json.dumps({k: v for k, v in email_cmd.items() if k != 'attachments'})}")
+                LOGGER.info(f"Attachment count: {len(attachments)}")
+            
+            # Send the email
+            result = await email_service.do_command(email_cmd)
+            LOGGER.info(f"Email service response: {result}")
             LOGGER.info(f"Sent email alert to {len(self.recipients)} recipients")
         except Exception as e:
             LOGGER.error(f"Failed to send email alert: {e}")
+            LOGGER.error(f"Exception type: {type(e)}")
+            if hasattr(e, "__traceback__"):
+                import traceback
+                tb_str = ''.join(traceback.format_exception(type(e), e, e.__traceback__))
+                LOGGER.error(f"Traceback: {tb_str}")
     
     async def perform_check(self):
         """Check for empty areas and send alerts if needed."""
