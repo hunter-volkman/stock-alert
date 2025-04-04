@@ -12,7 +12,7 @@ from viam.utils import SensorReading, struct_to_dict
 from viam.logging import getLogger
 
 # Import your models
-from .stock_alert import BaseStockAlert, StockAlertEmail
+from .alert import BaseStockAlert, StockAlertEmail
 
 LOGGER = getLogger(__name__)
 
