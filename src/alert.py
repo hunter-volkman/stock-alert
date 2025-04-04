@@ -238,7 +238,7 @@ class BaseStockAlert(Sensor):
         current_time = datetime.datetime.now()
         empty_areas = []
         
-        # Find the langer_fill sensor in dependencies - much simpler approach
+        # Find the langer_fill sensor in dependencies
         fill_sensor = None
         for name, resource in self.dependencies.items():
             name_str = str(name)
@@ -256,8 +256,23 @@ class BaseStockAlert(Sensor):
             LOGGER.info(f"Checking stock levels for {self.name}")
             readings = await fill_sensor.get_readings()
             
-            # Debug the readings format
-            LOGGER.debug(f"Received readings from langer_fill: {readings}")
+            # Log the entire readings structure
+            LOGGER.info(f"Received readings from langer_fill: {readings}")
+            
+            # Log readings for each monitored area
+            for area in self.areas:
+                area_reading = None
+                
+                # Try direct access first
+                if area in readings:
+                    area_reading = readings[area]
+                    LOGGER.info(f"Area {area} reading: {area_reading}")
+                # Try nested structure if direct access failed
+                elif isinstance(readings, dict) and "readings" in readings and area in readings["readings"]:
+                    area_reading = readings["readings"][area]
+                    LOGGER.info(f"Area {area} reading (nested): {area_reading}")
+                else:
+                    LOGGER.warning(f"Area {area} not found in readings")
             
             # Simplified handling for all known formats
             empty_areas = []
@@ -268,15 +283,19 @@ class BaseStockAlert(Sensor):
                     # Check if area exists in readings directly
                     if area in readings:
                         level = readings.get(area)
-                        LOGGER.debug(f"Area {area} has level: {level}")
                         if isinstance(level, (int, float)) and level == 0:
                             empty_areas.append(area)
+                            LOGGER.info(f"Area {area} is EMPTY (level={level})")
+                        else:
+                            LOGGER.info(f"Area {area} is NOT empty (level={level})")
                     # Check if area exists in a nested "readings" structure
                     elif "readings" in readings and area in readings["readings"]:
                         level = readings["readings"].get(area)
-                        LOGGER.debug(f"Area {area} has level (nested): {level}")
                         if isinstance(level, (int, float)) and level == 0:
                             empty_areas.append(area)
+                            LOGGER.info(f"Area {area} is EMPTY (nested level={level})")
+                        else:
+                            LOGGER.info(f"Area {area} is NOT empty (nested level={level})")
             
             # Record empty areas in history with timestamp
             today = current_time.strftime("%Y-%m-%d")
@@ -289,7 +308,7 @@ class BaseStockAlert(Sensor):
                 LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
                 await self.send_alert(empty_areas)
             else:
-                LOGGER.debug("No empty areas found during check")
+                LOGGER.info("No empty areas found during check")
             
             # Save state after successful check
             self._save_state()
