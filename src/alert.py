@@ -129,8 +129,18 @@ class BaseStockAlert(Sensor):
     def _is_within_operating_hours(self, current_time: datetime.datetime) -> bool:
         """Determine if current time is within operating hours."""
         try:
+            # If it's a weekend and we only check on weekdays, return False
+            if self.weekdays_only and not self._is_weekday(current_time.date()):
+                return False
+                
+            # Check if current time is in today's check times
             current_time_str = current_time.strftime("%H:%M")
-            return self.start_time <= current_time_str <= self.end_time
+            
+            # Make sure we have today's check times
+            if not self.today_check_times:
+                self._generate_todays_check_times()
+                
+            return current_time_str in self.today_check_times
         except Exception as e:
             LOGGER.error(f"Error checking operating hours: {e}")
             return True  # Default to active if there's an error
@@ -416,25 +426,26 @@ class StockAlertEmail(BaseStockAlert):
         if not isinstance(descriptor, str):
             raise ValueError("descriptor must be a string")
         
-        # Handle interval_minutes as either int or string
-        interval_minutes = attributes.get("interval_minutes", 15)
-        if isinstance(interval_minutes, str):
-            try:
-                int(interval_minutes)  # Just validate it can be converted
-            except ValueError:
-                raise ValueError("interval_minutes must be a positive integer")
-        elif not isinstance(interval_minutes, int) or interval_minutes < 1:
-            raise ValueError("interval_minutes must be a positive integer")
-        
-        # Validate weekdays_only (optional boolean)
-        weekdays_only = attributes.get("weekdays_only", True)
-        if not isinstance(weekdays_only, bool):
-            if isinstance(weekdays_only, str):
-                if weekdays_only.lower() not in ["true", "false"]:
-                    raise ValueError("weekdays_only must be a boolean (true/false)")
+        # Handle interval_minutes completely separately
+        if "interval_minutes" in attributes:
+            interval_value = attributes["interval_minutes"]
+            # Convert to int if it's a string
+            if isinstance(interval_value, str):
+                try:
+                    interval_value = int(interval_value)
+                    if interval_value < 1:
+                        raise ValueError("interval_minutes must be a positive integer")
+                except ValueError:
+                    raise ValueError("interval_minutes must be a positive integer")
+            # Check if it's an int
+            elif isinstance(interval_value, int):
+                if interval_value < 1:
+                    raise ValueError("interval_minutes must be a positive integer")
+            # If it's neither string nor int, raise error
             else:
-                raise ValueError("weekdays_only must be a boolean")
+                raise ValueError("interval_minutes must be a positive integer")
         
+        # Return the required dependencies
         return ["langer_fill", "sendgrid_email"]
 
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
@@ -462,7 +473,16 @@ class StockAlertEmail(BaseStockAlert):
         # Configure afternoon schedule
         afternoon_start = attributes.get("afternoon_start_time", "10:45")
         afternoon_end = attributes.get("afternoon_end_time", "15:00")
-        self.interval_minutes = int(attributes.get("interval_minutes", 15))
+        
+        # Handle interval_minutes conversion
+        interval_minutes = attributes.get("interval_minutes", 15)
+        if isinstance(interval_minutes, str):
+            try:
+                interval_minutes = int(interval_minutes)
+            except ValueError:
+                LOGGER.warning(f"Invalid interval_minutes value '{interval_minutes}', using default of 15")
+                interval_minutes = 15
+        self.interval_minutes = interval_minutes
         
         self.afternoon_start_time = afternoon_start
         self.afternoon_end_time = afternoon_end
