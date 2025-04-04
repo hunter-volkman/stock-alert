@@ -483,45 +483,13 @@ class StockAlertEmail(Sensor):
             # Format the subject with location at the end
             subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
-            # Set up the base email content
+            # Create the email body
             body = f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
 
     Location: {self.location}
-    Time: {timestamp}
-    """
-
-            # Process image attachment if available
-            attachments = []
-            if image_info and os.path.exists(image_info["path"]):
-                try:
-                    # Read image file
-                    with open(image_info["path"], "rb") as f:
-                        image_data = f.read()
-                    
-                    # Check if we have valid image data
-                    if not image_data or len(image_data) < 100:  # Basic sanity check
-                        LOGGER.warning(f"Image file appears empty or corrupted: {image_info['path']}")
-                    else:
-                        # Encode as base64
-                        encoded_image = base64.b64encode(image_data).decode("utf-8")
-                        
-                        # Create attachment object
-                        attachments.append({
-                            "filename": os.path.basename(image_info["path"]),
-                            "content": encoded_image,
-                            "type": "image/jpeg",
-                            "disposition": "attachment"  # Changed to "attachment" instead of "inline"
-                        })
-                        
-                        # Modify body to mention the attachment
-                        body += f"\nA snapshot of the area is attached to this email."
-                        
-                        LOGGER.info(f"Added image attachment: {os.path.basename(image_info['path'])}, size: {len(image_data)} bytes")
-                except Exception as e:
-                    LOGGER.error(f"Error attaching image to email: {e}")
-                    LOGGER.info("Continuing to send email without image attachment")
+    Time: {timestamp}"""
             
-            # Create the complete email command with all components
+            # Set up the email command
             email_cmd = {
                 "command": "send",
                 "to": self.recipients,
@@ -529,13 +497,64 @@ class StockAlertEmail(Sensor):
                 "body": body
             }
             
-            # Only add attachments if we have any
-            if attachments:
-                email_cmd["attachments"] = attachments
-                
-                # Log the full command structure for debugging
-                LOGGER.info(f"Email command structure: {json.dumps({k: v for k, v in email_cmd.items() if k != 'attachments'})}")
-                LOGGER.info(f"Attachment count: {len(attachments)}")
+            # Add image attachment if available
+            if image_info and os.path.exists(image_info["path"]):
+                try:
+                    # Read image file
+                    with open(image_info["path"], "rb") as f:
+                        image_data = f.read()
+                    
+                    # Verify image data is valid
+                    if not image_data or len(image_data) < 100:
+                        LOGGER.warning(f"Image file is too small or empty: {image_info['path']}")
+                    else:
+                        # Encode as base64
+                        encoded_image = base64.b64encode(image_data).decode("utf-8")
+                        
+                        # Log detailed information about the attachment
+                        LOGGER.info(f"Adding image: {os.path.basename(image_info['path'])}, size: {len(image_data)} bytes, encoded length: {len(encoded_image)}")
+                        
+                        # Update the email command with attachment
+                        # Modified to use content_id for inline display
+                        image_filename = os.path.basename(image_info["path"])
+                        content_id = f"<image_{timestamp.replace(' ', '_').replace(':', '').replace('-', '')}>"
+                        
+                        email_cmd["attachments"] = [{
+                            "filename": image_filename,
+                            "content": encoded_image,
+                            "type": "image/jpeg",
+                            "disposition": "inline",
+                            "content_id": content_id
+                        }]
+                        
+                        # Add HTML body with image reference
+                        html_body = f"""<html>
+    <body>
+    <p>The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}</p>
+    <p>Location: {self.location}<br>
+    Time: {timestamp}</p>
+    <p>A snapshot of the area is shown below:</p>
+    <img src="cid:{content_id[1:-1]}" alt="Empty area snapshot" style="max-width: 100%;">
+    </body>
+    </html>"""
+                        
+                        # Add HTML version to the email
+                        email_cmd["html"] = html_body
+                        
+                        # Update text body to mention the attachment
+                        email_cmd["body"] += "\n\nA snapshot of the area is attached to this email."
+                except Exception as e:
+                    LOGGER.error(f"Error preparing image attachment: {e}")
+                    if hasattr(e, "__traceback__"):
+                        import traceback
+                        tb_str = ''.join(traceback.format_exception(type(e), e, e.__traceback__))
+                        LOGGER.error(f"Traceback: {tb_str}")
+            
+            # Log the email command structure (excluding the actual attachment content for brevity)
+            log_cmd = {k: v for k, v in email_cmd.items() if k != "attachments"}
+            if "attachments" in email_cmd:
+                log_cmd["attachments"] = f"[{len(email_cmd['attachments'])} attachments]"
+            LOGGER.info(f"Email command structure: {json.dumps(log_cmd)}")
             
             # Send the email
             result = await email_service.do_command(email_cmd)
