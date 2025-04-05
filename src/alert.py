@@ -225,33 +225,11 @@ class StockAlertEmail(Sensor):
             self.weekdays_only = self.weekdays_only.lower() == "true"
         
         # Direct check times configuration
-        if "check_times" in attributes:
-            self.check_times = attributes["check_times"]
-        else:
-            # Backward compatibility with morning/afternoon style config
-            self.check_times = []
-            
-            # Add morning check times
-            morning_times = attributes.get("morning_check_times", ["08:15", "08:30", "10:15", "10:30"])
-            self.check_times.extend(morning_times)
-            
-            # Generate afternoon check times
-            start_time = attributes.get("afternoon_start_time", "10:45")
-            end_time = attributes.get("afternoon_end_time", "15:00")
-            interval_minutes = int(attributes.get("interval_minutes", 15))
-            
-            # Generate times at regular intervals
-            try:
-                current = datetime.datetime.strptime(start_time, "%H:%M")
-                end = datetime.datetime.strptime(end_time, "%H:%M")
-                
-                while current <= end:
-                    self.check_times.append(current.strftime("%H:%M"))
-                    current += datetime.timedelta(minutes=interval_minutes)
-            except Exception as e:
-                LOGGER.error(f"Error generating check times: {e}")
-        
-        # Sort and deduplicate
+        self.check_times = attributes.get("check_times", ["08:15", "08:30", "10:15", "10:30", "11:00", 
+                                                      "11:30", "12:00", "12:30", "13:00", "13:30", 
+                                                      "14:00", "14:30", "15:00"])
+
+        # Sort the check times to ensure they're in chronological order
         self.check_times = sorted(list(set(self.check_times)))
         
         # Store dependencies
