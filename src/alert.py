@@ -659,7 +659,10 @@ Time: {timestamp}</p>
                 
                 # Add content
                 message.add_content(Content("text/plain", body))
-                message.add_content(Content("text/html", f"<html><body><p>{body.replace('\n', '<br>')}</p></body></html>"))
+                
+                # Use a raw string to avoid backslash issues with the newline replacement
+                html_body = body.replace("\n", "<br>")
+                message.add_content(Content("text/html", f"<html><body><p>{html_body}</p></body></html>"))
                 
                 # Send email
                 sg = SendGridAPIClient(self.sendgrid_api_key)
