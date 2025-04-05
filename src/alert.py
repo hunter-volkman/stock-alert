@@ -14,6 +14,8 @@ from viam.resource.types import Model, ModelFamily
 from viam.utils import SensorReading, struct_to_dict
 from viam.logging import getLogger
 from viam.media.video import ViamImage
+from PIL import Image
+from io import BytesIO
 
 # Add SendGrid imports
 from sendgrid import SendGridAPIClient
@@ -413,21 +415,21 @@ class StockAlertEmail(Sensor):
             
             # Handle the image data depending on its type
             if isinstance(image, ViamImage):
-                image_data = await image.get_bytes()
+                # Use PIL to process ViamImage.data, inspired by image-emailer
+                pil_image = Image.open(BytesIO(image.data))
+                pil_image.save(image_path, "JPEG")
             elif isinstance(image, bytes):
                 # Direct bytes
-                image_data = image
+                with open(image_path, "wb") as f:
+                    f.write(image)
             elif isinstance(image, dict) and 'data' in image:
                 # Dict with data
-                image_data = image['data']
+                with open(image_path, "wb") as f:
+                    f.write(image['data'])
             else:
                 LOGGER.warning(f"Unsupported image type: {type(image)}")
                 return None
                 
-            # Save image data to disk
-            with open(image_path, "wb") as f:
-                f.write(image_data)
-            
             self.last_image_path = image_path
             LOGGER.info(f"Saved image to {image_path}")
             
@@ -477,21 +479,24 @@ class StockAlertEmail(Sensor):
 Location: {self.location}
 Time: {timestamp}"""
             
-            # Create email message
-            message = Mail(
-                from_email=Email(self.sender_email, self.sender_name),
-                subject=subject
-            )
-            
-            # Add recipients, validating each one
+            # Create email message with to_emails directly, inspired by viam-sendgrid-email
+            valid_recipients = []
             for recipient in self.recipients:
                 if not isinstance(recipient, str) or '@' not in recipient:
                     LOGGER.error(f"Invalid recipient email: {recipient}")
                     continue
-                message.add_to(Email(recipient))
+                valid_recipients.append(recipient)
             
-            # Add plain text content
-            message.add_content(Content("text/plain", body_text))
+            if not valid_recipients:
+                LOGGER.error("No valid recipients found, aborting send")
+                return
+            
+            message = Mail(
+                from_email=Email(self.sender_email, self.sender_name),
+                to_emails=valid_recipients,  # Pass list directly instead of add_to
+                subject=subject,
+                plain_text_content=Content("text/plain", body_text)  # Add content directly
+            )
             
             # Create HTML content
             html_content = f"""<html>
@@ -535,7 +540,7 @@ Time: {timestamp}</p>
             sg = SendGridAPIClient(self.sendgrid_api_key)
             response = sg.send(message)
             LOGGER.info(f"Email sent via SendGrid API. Status code: {response.status_code}")
-            LOGGER.info(f"Sent email alert to {len(self.recipients)} recipients")
+            LOGGER.info(f"Sent email alert to {len(valid_recipients)} recipients")
             
         except Exception as e:
             LOGGER.error(f"Failed to send email alert: {e}")
@@ -649,18 +654,20 @@ Time: {timestamp}</p>
                 subject = f"Test Alert from {self.location}"
                 body = f"This is a test alert from {self.name} at {self.location}.\nTime: {timestamp}"
                 
-                # Create email message
+                # Create email message with to_emails directly
+                valid_recipients = [r for r in self.recipients if isinstance(r, str) and '@' in r]
+                if not valid_recipients:
+                    return {
+                        "status": "error",
+                        "message": "No valid recipients found"
+                    }
+                
                 message = Mail(
                     from_email=Email(self.sender_email, self.sender_name),
-                    subject=subject
+                    to_emails=valid_recipients,
+                    subject=subject,
+                    plain_text_content=Content("text/plain", body)
                 )
-                
-                # Add recipients
-                for recipient in self.recipients:
-                    message.add_to(Email(recipient))
-                
-                # Add content
-                message.add_content(Content("text/plain", body))
                 
                 # Use a raw string to avoid backslash issues with the newline replacement
                 html_body = body.replace("\n", "<br>")
