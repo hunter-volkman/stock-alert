@@ -12,7 +12,6 @@
       "markdown_link": "README.md#model-hunterstock-alertemail",
       "requires": [
         {"name": "langer_fill", "type": "component", "subtype": "sensor"},
-        {"name": "email", "type": "service", "subtype": "generic"},
         {"name": "camera", "type": "component", "subtype": "camera", "optional": true}
       ]
     }

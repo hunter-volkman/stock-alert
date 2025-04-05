@@ -2,3 +2,4 @@ viam-sdk==0.43.1
 typing-extensions
 fasteners
 Pillow
+sendgrid==6.9.7
