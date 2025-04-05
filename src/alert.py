@@ -412,8 +412,7 @@ class StockAlertEmail(Sensor):
             image_path = os.path.join(self.images_dir, filename)
             
             # Handle the image data depending on its type
-            if hasattr(image, 'get_bytes'):
-                # ViamImage object
+            if isinstance(image, ViamImage):
                 image_data = await image.get_bytes()
             elif isinstance(image, bytes):
                 # Direct bytes
@@ -484,8 +483,11 @@ Time: {timestamp}"""
                 subject=subject
             )
             
-            # Add recipients
+            # Add recipients, validating each one
             for recipient in self.recipients:
+                if not isinstance(recipient, str) or '@' not in recipient:
+                    LOGGER.error(f"Invalid recipient email: {recipient}")
+                    continue
                 message.add_to(Email(recipient))
             
             # Add plain text content
