@@ -20,6 +20,27 @@ LOGGER = getLogger(__name__)
 
 class StockAlertEmail(Sensor):
     MODEL = Model(ModelFamily("hunter", "stock-alert"), "email")
+    _instances = {}  # Class-level dictionary to track instances by name
+    
+    @classmethod
+    def new(cls, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]) -> "StockAlertEmail":
+        """Factory method that ensures only one instance per name exists."""
+        name = config.name
+        
+        # Check if we already have an instance with this name
+        if name in cls._instances:
+            LOGGER.debug(f"Reusing existing instance of {cls.__name__} with name '{name}'")
+            instance = cls._instances[name]
+            # Just update its configuration
+            instance.reconfigure(config, dependencies)
+            return instance
+            
+        # Create new instance if it doesn't exist
+        LOGGER.debug(f"Creating new instance of {cls.__name__} with name '{name}'")
+        instance = cls(name)
+        cls._instances[name] = instance
+        instance.reconfigure(config, dependencies)
+        return instance
     
     def __init__(self, name: str):
         super().__init__(name)
@@ -57,8 +78,30 @@ class StockAlertEmail(Sensor):
         # Background task
         self._check_task = None
         
-        # Load state
-        self._load_state()
+        # Load state silently
+        self._load_state_silent()
+    
+    def _load_state_silent(self):
+        """Load state quietly without logging at initialization time."""
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r") as f:
+                    state = json.load(f)
+                    self.last_check_time = (
+                        datetime.datetime.fromisoformat(state["last_check_time"])
+                        if state.get("last_check_time")
+                        else None
+                    )
+                    self.last_alert_time = (
+                        datetime.datetime.fromisoformat(state["last_alert_time"])
+                        if state.get("last_alert_time")
+                        else None
+                    )
+                    self.total_alerts_sent = state.get("total_alerts_sent", 0)
+                    self.empty_areas = state.get("empty_areas", [])
+                    self.last_image_path = state.get("last_image_path", None)
+            except Exception:
+                pass  # Silently fail on error
     
     def _load_state(self):
         """Load persistent state from file with locking."""
@@ -129,12 +172,6 @@ class StockAlertEmail(Sensor):
                 LOGGER.warning(f"Could not acquire lock to save state for {self.name}")
         except Exception as e:
             LOGGER.error(f"Error saving state: {e}")
-    
-    @classmethod
-    def new(cls, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]) -> "StockAlertEmail":
-        alerter = cls(config.name)
-        alerter.reconfigure(config, dependencies)
-        return alerter
 
     @classmethod
     def validate_config(cls, config: ComponentConfig) -> list[str]:
@@ -177,12 +214,11 @@ class StockAlertEmail(Sensor):
     
     def reconfigure(self, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]):
         """Configure the stock alert with updated settings."""
-        # Cancel existing task if it exists
-        if self._check_task and not self._check_task.done():
-            LOGGER.info(f"Check task for {self.name} already running, cancelling")
-            self._check_task.cancel()
+        # Use a lock to ensure only one instance is fully active and logging
+        lock = fasteners.InterProcessLock(self.lock_file)
+        is_primary = lock.acquire(blocking=False)
         
-        # Basic configuration
+        # Silent early configuration - no logging yet
         self.location = config.attributes.fields["location"].string_value
         attributes = struct_to_dict(config.attributes)
         
@@ -206,7 +242,6 @@ class StockAlertEmail(Sensor):
             self.weekdays_only = self.weekdays_only.lower() == "true"
         
         # Direct check times configuration
-        # First, check if check_times is provided
         if "check_times" in attributes:
             self.check_times = attributes["check_times"]
         else:
@@ -230,8 +265,9 @@ class StockAlertEmail(Sensor):
                 while current <= end:
                     self.check_times.append(current.strftime("%H:%M"))
                     current += datetime.timedelta(minutes=interval_minutes)
-            except Exception as e:
-                LOGGER.error(f"Error generating check times: {e}")
+            except Exception:
+                # No logging yet
+                pass
         
         # Sort and deduplicate
         self.check_times = sorted(list(set(self.check_times)))
@@ -239,20 +275,118 @@ class StockAlertEmail(Sensor):
         # Store dependencies
         self.dependencies = dependencies
         
-        # Start the monitoring loop (always start a new one)
-        self._check_task = asyncio.create_task(self.run_checks_loop())
+        # Cancel existing task if it exists
+        if self._check_task and not self._check_task.done():
+            self._check_task.cancel()
         
-        # Only log configuration details once
-        LOGGER.info(f"Configured {self.name} for location '{self.location}'")
-        LOGGER.info(f"Weekdays only: {self.weekdays_only}")
-        LOGGER.info(f"Check times: {', '.join(self.check_times)}")
-        LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
-        LOGGER.info(f"Will send alerts to: {', '.join(self.recipients)}")
-        
-        if self.include_image:
-            LOGGER.info(f"Will include images from camera: {self.camera_name}")
+        if is_primary:
+            # Only log configuration details in the primary instance
+            LOGGER.info(f"Configured {self.name} for location '{self.location}'")
+            LOGGER.info(f"Weekdays only: {self.weekdays_only}")
+            LOGGER.info(f"Check times: {', '.join(self.check_times)}")
+            LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
+            LOGGER.info(f"Will send alerts to: {', '.join(self.recipients)}")
+            
+            if self.include_image:
+                LOGGER.info(f"Will include images from camera: {self.camera_name}")
+            else:
+                LOGGER.info("Image capture disabled")
+                
+            # Start main check loop and pass lock
+            self._check_task = asyncio.create_task(self._run_checks_primary(lock))
         else:
-            LOGGER.info("Image capture disabled")
+            # For secondary instances, run a dummy task
+            self._check_task = asyncio.create_task(self._run_checks_secondary())
+    
+    async def _run_checks_primary(self, lock):
+        """Run the monitoring loop as the primary instance (with the lock)."""
+        LOGGER.info(f"Starting scheduled checks loop for {self.name} (PID: {os.getpid()})")
+        
+        try:
+            # Now we can properly log state since we're the primary
+            if os.path.exists(self.state_file):
+                try:
+                    with open(self.state_file, "r") as f:
+                        state = json.load(f)
+                        # Load state attributes...
+                        self.last_check_time = (
+                            datetime.datetime.fromisoformat(state["last_check_time"])
+                            if state.get("last_check_time")
+                            else None
+                        )
+                        self.last_alert_time = (
+                            datetime.datetime.fromisoformat(state["last_alert_time"])
+                            if state.get("last_alert_time")
+                            else None
+                        )
+                        self.total_alerts_sent = state.get("total_alerts_sent", 0)
+                        self.empty_areas = state.get("empty_areas", [])
+                    LOGGER.info(f"Loaded state from {self.state_file}: last_check_time={self.last_check_time}, " 
+                                f"last_alert_time={self.last_alert_time}, total_alerts_sent={self.total_alerts_sent}")
+                except Exception as e:
+                    LOGGER.error(f"Error loading state: {e}")
+            else:
+                LOGGER.info(f"No state file at {self.state_file}, starting fresh")
+            
+            # Primary check loop
+            while True:
+                # Get current time and next check time
+                current_time = datetime.datetime.now()
+                next_check = self._get_next_check_time(current_time)
+                
+                if next_check is None:
+                    # No check times configured, sleep for 1 hour and retry
+                    LOGGER.warning(f"No check times configured for {self.name}, sleeping for 1 hour")
+                    await asyncio.sleep(3600)
+                    continue
+                
+                # Calculate sleep time
+                sleep_seconds = (next_check - current_time).total_seconds()
+                
+                if sleep_seconds <= 0:
+                    # We're already past the check time, so run now
+                    LOGGER.info(f"Already past scheduled check time {next_check}, running now")
+                    await self.perform_check()
+                    # Small gap between checks
+                    await asyncio.sleep(1)
+                    continue
+                
+                # Log next check information
+                LOGGER.info(f"Next check scheduled for {next_check.strftime('%H:%M')} (sleeping {sleep_seconds:.1f} seconds)")
+                
+                try:
+                    # Sleep until the exact next check time
+                    await asyncio.sleep(sleep_seconds)
+                    
+                    # Perform the check
+                    await self.perform_check()
+                    
+                except asyncio.CancelledError:
+                    LOGGER.info(f"Sleep interrupted for {self.name}")
+                    raise
+            
+        except asyncio.CancelledError:
+            LOGGER.info(f"Check loop cancelled for {self.name}")
+            raise
+        except Exception as e:
+            LOGGER.error(f"Error in check loop: {e}")
+            await asyncio.sleep(60)
+        finally:
+            try:
+                lock.release()
+                LOGGER.info(f"Released lock for {self.name}, check loop exiting (PID: {os.getpid()})")
+            except Exception as e:
+                LOGGER.error(f"Error releasing lock: {e}")
+
+    async def _run_checks_secondary(self):
+        """Secondary instance just sleeps indefinitely."""
+        try:
+            # Just wait quietly until cancelled
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            # Exit silently
+            pass
     
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
         """Get current sensor readings."""
@@ -609,71 +743,6 @@ class StockAlertEmail(Sensor):
                 
         except Exception as e:
             LOGGER.error(f"Error checking stock levels: {e}")
-    
-    async def run_checks_loop(self):
-        """Run the monitoring loop with process locking."""
-        # Use fasteners to ensure only one instance runs the scheduled loop
-        lock = fasteners.InterProcessLock(self.lock_file)
-        
-        # Try to acquire the lock without blocking - don't log anything until we know if we have the lock
-        if not lock.acquire(blocking=False):
-            # Silent exit for duplicate processes - no logging here
-            return
-        
-        # Only log startup after successfully acquiring the lock
-        LOGGER.info(f"Starting scheduled checks loop for {self.name} (PID: {os.getpid()})")
-        
-        try:
-            while True:
-                # Get current time and next check time
-                current_time = datetime.datetime.now()
-                next_check = self._get_next_check_time(current_time)
-                
-                if next_check is None:
-                    # No check times configured, sleep for 1 hour and retry
-                    LOGGER.warning(f"No check times configured for {self.name}, sleeping for 1 hour")
-                    await asyncio.sleep(3600)
-                    continue
-                
-                # Calculate sleep time
-                sleep_seconds = (next_check - current_time).total_seconds()
-                
-                if sleep_seconds <= 0:
-                    # We're already past the check time, so run now
-                    LOGGER.info(f"Already past scheduled check time {next_check}, running now")
-                    await self.perform_check()
-                    # Small gap between checks
-                    await asyncio.sleep(1)
-                    continue
-                
-                # Log next check information
-                LOGGER.info(f"Next check scheduled for {next_check.strftime('%H:%M')} (sleeping {sleep_seconds:.1f} seconds)")
-                
-                try:
-                    # Sleep until the exact next check time
-                    await asyncio.sleep(sleep_seconds)
-                    
-                    # Perform the check
-                    await self.perform_check()
-                    
-                except asyncio.CancelledError:
-                    LOGGER.info(f"Sleep interrupted for {self.name}")
-                    raise
-                
-        except asyncio.CancelledError:
-            LOGGER.info(f"Check loop cancelled for {self.name}")
-            raise
-        except Exception as e:
-            LOGGER.error(f"Error in check loop: {e}")
-            # Sleep for 1 minute on error before trying again
-            await asyncio.sleep(60)
-        finally:
-            # Make sure we release the lock
-            try:
-                lock.release()
-                LOGGER.info(f"Released lock for {self.name}, check loop exiting (PID: {os.getpid()})")
-            except Exception as e:
-                LOGGER.error(f"Error releasing lock: {e}")
     
     async def do_command(self, command: dict, *, timeout: Optional[float] = None, **kwargs) -> dict:
         """Handle custom commands."""

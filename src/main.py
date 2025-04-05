@@ -3,7 +3,7 @@ from viam.module.module import Module
 from viam.components.sensor import Sensor
 from viam.logging import getLogger
 
-# Import the StockAlertEmail component
+# Import the component
 from .alert import StockAlertEmail
 
 LOGGER = getLogger(__name__)
@@ -13,10 +13,10 @@ async def main():
     try:
         LOGGER.info("Starting the stock-alert module")
         
-        # Create module from command line arguments
+        # Create module from args
         module = Module.from_args()
         
-        # Register the email model
+        # Register the model
         module.add_model_from_registry(Sensor.API, StockAlertEmail.MODEL)
         
         # Start the module
