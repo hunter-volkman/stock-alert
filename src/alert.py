@@ -179,6 +179,7 @@ class StockAlertEmail(Sensor):
         """Configure the stock alert with updated settings."""
         # Cancel existing task if it exists
         if self._check_task and not self._check_task.done():
+            LOGGER.info(f"Check task for {self.name} already running, cancelling")
             self._check_task.cancel()
         
         # Basic configuration
@@ -238,9 +239,10 @@ class StockAlertEmail(Sensor):
         # Store dependencies
         self.dependencies = dependencies
         
-        # Start the monitoring loop
+        # Start the monitoring loop (always start a new one)
         self._check_task = asyncio.create_task(self.run_checks_loop())
         
+        # Only log configuration details once
         LOGGER.info(f"Configured {self.name} for location '{self.location}'")
         LOGGER.info(f"Weekdays only: {self.weekdays_only}")
         LOGGER.info(f"Check times: {', '.join(self.check_times)}")
@@ -612,10 +614,13 @@ class StockAlertEmail(Sensor):
         """Run the monitoring loop with process locking."""
         # Use fasteners to ensure only one instance runs the scheduled loop
         lock = fasteners.InterProcessLock(self.lock_file)
+        
+        # Try to acquire the lock without blocking - don't log anything until we know if we have the lock
         if not lock.acquire(blocking=False):
-            LOGGER.info(f"Another instance of {self.name} is already running the check loop (PID {os.getpid()})")
+            # Silent exit for duplicate processes - no logging here
             return
         
+        # Only log startup after successfully acquiring the lock
         LOGGER.info(f"Starting scheduled checks loop for {self.name} (PID: {os.getpid()})")
         
         try:
