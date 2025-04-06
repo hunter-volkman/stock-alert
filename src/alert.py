@@ -599,20 +599,13 @@ class StockAlertEmail(Sensor):
             # Format the subject with location at the end
             subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
-            # Create the email body with percentile information
+            # Create the email body - simplified for end users
             body_text = f"""The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}
 
-Location: {self.location}
-Time: {timestamp}
-
-Percentile Values (99th percentile, threshold: {self.empty_threshold}):"""
-            # Check whether to keep these values in body or remove from it            
-            # Add percentile data for each empty area
-            for area in sorted_areas:
-                percentile_value = percentiles.get(area, 0.0)
-                body_text += f"\n- {area}: {percentile_value:.2f}"
+    Location: {self.location}
+    Time: {timestamp}"""
             
-            # Create email message with to_emails directly, inspired by viam-sendgrid-email
+            # Create email message with to_emails directly
             valid_recipients = []
             for recipient in self.recipients:
                 if not isinstance(recipient, str) or '@' not in recipient:
@@ -626,27 +619,18 @@ Percentile Values (99th percentile, threshold: {self.empty_threshold}):"""
             
             message = Mail(
                 from_email=Email(self.sender_email, self.sender_name),
-                to_emails=valid_recipients,  # Pass list directly instead of add_to
+                to_emails=valid_recipients,
                 subject=subject,
-                plain_text_content=Content("text/plain", body_text)  # Add content directly
+                plain_text_content=Content("text/plain", body_text)
             )
             
-            # Create HTML content
+            # Create HTML content - simplified for end users
             html_content = f"""<html>
-<body>
-<p>The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}</p>
-<p>Location: {self.location}<br>
-Time: {timestamp}</p>
-<p>Percentile Values (99th percentile, threshold: {self.empty_threshold}):</p>
-<ul>
-"""
-            
-            # Add percentile data for each empty area in HTML
-            for area in sorted_areas:
-                percentile_value = percentiles.get(area, 0.0)
-                html_content += f"<li>{area}: {percentile_value:.2f}</li>"
-            
-            html_content += "</ul>"
+    <body>
+    <p>The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}</p>
+    <p>Location: {self.location}<br>
+    Time: {timestamp}</p>
+    """
             
             # Add image if available
             if image_info and os.path.exists(image_info["path"]):
@@ -668,7 +652,7 @@ Time: {timestamp}</p>
                     message.add_attachment(attachment)
                     
                     # Add reference to HTML
-                    html_content += f"""<p>See attached image (captured at the time of alert).</p>"""
+                    html_content += f"""<p>See the attached image for review.</p>"""
                     
                     LOGGER.info(f"Added image attachment: {file_name}")
                 except Exception as e:
@@ -677,6 +661,10 @@ Time: {timestamp}</p>
             # Complete HTML
             html_content += "</body></html>"
             message.add_content(Content("text/html", html_content))
+            
+            # Log percentile values (for developer reference only)
+            percentile_log = ", ".join([f"{a}: {v:.2f}" for a, v in percentiles.items() if a in empty_areas])
+            LOGGER.info(f"Percentiles for empty areas: {percentile_log} (threshold: {self.empty_threshold})")
             
             # Send the email
             sg = SendGridAPIClient(self.sendgrid_api_key)
