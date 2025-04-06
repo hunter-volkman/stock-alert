@@ -606,7 +606,7 @@ Location: {self.location}
 Time: {timestamp}
 
 Percentile Values (99th percentile, threshold: {self.empty_threshold}):"""
-            
+            # Check whether to keep these values in body or remove from it            
             # Add percentile data for each empty area
             for area in sorted_areas:
                 percentile_value = percentiles.get(area, 0.0)
