@@ -600,7 +600,7 @@ class StockAlertEmail(Sensor):
             subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
             # Create the email body with percentile information
-            body_text = f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
+            body_text = f"""The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}
 
 Location: {self.location}
 Time: {timestamp}
@@ -634,7 +634,7 @@ Percentile Values (99th percentile, threshold: {self.empty_threshold}):"""
             # Create HTML content
             html_content = f"""<html>
 <body>
-<p>The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}</p>
+<p>The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}</p>
 <p>Location: {self.location}<br>
 Time: {timestamp}</p>
 <p>Percentile Values (99th percentile, threshold: {self.empty_threshold}):</p>
@@ -668,7 +668,7 @@ Time: {timestamp}</p>
                     message.add_attachment(attachment)
                     
                     # Add reference to HTML
-                    html_content += f"""<p>A snapshot of the area is attached to this email.</p>"""
+                    html_content += f"""<p>See attached image (captured at the time of alert).</p>"""
                     
                     LOGGER.info(f"Added image attachment: {file_name}")
                 except Exception as e:
