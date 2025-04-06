@@ -3,3 +3,4 @@ typing-extensions
 fasteners
 Pillow
 sendgrid==6.9.7
+numpy>=1.20.0

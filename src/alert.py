@@ -4,7 +4,10 @@ import json
 import os
 import base64
 import fasteners
+import numpy as np  # Add numpy for percentile calculations
 from typing import Mapping, Optional, Any, List, Dict
+from collections import defaultdict, deque
+import time
 from viam.module.module import Module
 from viam.components.sensor import Sensor
 from viam.components.camera import Camera
@@ -100,6 +103,11 @@ class StockAlertEmail(Sensor):
         self.image_width = 640
         self.image_height = 480
         
+        # New threshold configuration
+        self.empty_threshold = 0.0  # Default threshold is 0
+        self.sampling_window_minutes = 5  # Default to 5 minutes before check time
+        self.sampling_interval_seconds = 1  # Default to 1 second between samples
+        
         # Simplified scheduling
         self.weekdays_only = True
         self.check_times = []
@@ -111,6 +119,11 @@ class StockAlertEmail(Sensor):
         self.last_alert_time = None
         self.last_image_path = None
         
+        # Reading buffer for percentile calculations - using defaultdict of deques
+        self.readings_buffer = defaultdict(lambda: deque(maxlen=300))  # 5 minutes * 60 seconds = 300 readings
+        self.last_reading_time = None
+        self.current_percentiles = {}
+        
         # State persistence
         self.state_dir = os.path.join(os.path.expanduser("~"), ".stock-alert")
         self.state_file = os.path.join(self.state_dir, f"{name}.json")
@@ -118,8 +131,9 @@ class StockAlertEmail(Sensor):
         os.makedirs(self.state_dir, exist_ok=True)
         os.makedirs(self.images_dir, exist_ok=True)
         
-        # Background task
+        # Background tasks
         self._check_task = None
+        self._sampling_task = None
         
         # Load state silently
         self._load_state()
@@ -149,6 +163,7 @@ class StockAlertEmail(Sensor):
                             self.total_alerts_sent = state.get("total_alerts_sent", 0)
                             self.empty_areas = state.get("empty_areas", [])
                             self.last_image_path = state.get("last_image_path")
+                            self.current_percentiles = state.get("current_percentiles", {})
                             
                         LOGGER.info(f"Loaded state from {self.state_file}")
                     finally:
@@ -174,7 +189,8 @@ class StockAlertEmail(Sensor):
                         "last_alert_time": self.last_alert_time.isoformat() if self.last_alert_time else None,
                         "total_alerts_sent": self.total_alerts_sent,
                         "empty_areas": self.empty_areas,
-                        "last_image_path": self.last_image_path
+                        "last_image_path": self.last_image_path,
+                        "current_percentiles": self.current_percentiles
                     }
                     
                     # First write to a temporary file
@@ -221,6 +237,22 @@ class StockAlertEmail(Sensor):
         self.image_width = int(attributes.get("image_width", 640))
         self.image_height = int(attributes.get("image_height", 480))
         
+        # New threshold configuration
+        self.empty_threshold = float(attributes.get("empty_threshold", 0.0))
+        self.sampling_window_minutes = int(attributes.get("sampling_window_minutes", 5))
+        self.sampling_interval_seconds = int(attributes.get("sampling_interval_seconds", 1))
+        
+        # Calculate buffer size based on config
+        buffer_size = self.sampling_window_minutes * 60 // self.sampling_interval_seconds
+        # Update buffer size for all areas
+        for area in self.areas:
+            if area not in self.readings_buffer:
+                self.readings_buffer[area] = deque(maxlen=buffer_size)
+            else:
+                # Create a new deque with updated maxlen and copy over old values
+                old_values = list(self.readings_buffer[area])
+                self.readings_buffer[area] = deque(old_values, maxlen=buffer_size)
+        
         # Simplified scheduling configuration
         self.weekdays_only = attributes.get("weekdays_only", True)
         if isinstance(self.weekdays_only, str):
@@ -237,15 +269,20 @@ class StockAlertEmail(Sensor):
         # Store dependencies
         self.dependencies = dependencies
         
-        # Cancel existing task if it exists
+        # Cancel existing tasks if they exist
         if self._check_task and not self._check_task.done():
             self._check_task.cancel()
+        if self._sampling_task and not self._sampling_task.done():
+            self._sampling_task.cancel()
         
         # Log configuration details
         LOGGER.info(f"Configured {self.name} for location '{self.location}'")
         LOGGER.info(f"Weekdays only: {self.weekdays_only}")
         LOGGER.info(f"Check times: {', '.join(self.check_times)}")
         LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
+        LOGGER.info(f"Empty threshold: {self.empty_threshold}")
+        LOGGER.info(f"Sampling window: {self.sampling_window_minutes} minutes")
+        LOGGER.info(f"Sampling interval: {self.sampling_interval_seconds} seconds")
         LOGGER.info(f"Will send alerts to: {', '.join(self.recipients)}")
         
         if self.sendgrid_api_key:
@@ -258,8 +295,64 @@ class StockAlertEmail(Sensor):
         else:
             LOGGER.info("Image capture disabled")
             
-        # Start main check loop
+        # Start main check loop and sampling task
         self._check_task = asyncio.create_task(self._run_checks())
+        self._sampling_task = asyncio.create_task(self._run_sampling())
+    
+    async def _run_sampling(self):
+        """Continuously sample readings at the configured interval."""
+        LOGGER.info(f"Starting sampling task for {self.name} (PID: {os.getpid()})")
+        
+        try:
+            # Find the fill sensor dependency
+            fill_sensor = None
+            for name, resource in self.dependencies.items():
+                if "langer_fill" in str(name):
+                    fill_sensor = resource
+                    LOGGER.info(f"Found fill sensor: {name}")
+                    break
+            
+            if not fill_sensor:
+                LOGGER.error(f"langer_fill sensor not available for {self.name}, cannot start sampling")
+                return
+            
+            # Sampling loop
+            while True:
+                try:
+                    # Get readings from fill sensor
+                    readings = await fill_sensor.get_readings()
+                    current_time = datetime.datetime.now()
+                    self.last_reading_time = current_time
+                    
+                    # Process readings for each area
+                    for area in self.areas:
+                        level = None
+                        
+                        # Try direct access first
+                        if area in readings:
+                            level = readings[area]
+                        # Try nested structure
+                        elif isinstance(readings, dict) and "readings" in readings and area in readings["readings"]:
+                            level = readings["readings"][area]
+                        
+                        # Add to buffer if we have a valid reading
+                        if isinstance(level, (int, float)):
+                            self.readings_buffer[area].append(level)
+                    
+                    # Sleep for the configured interval
+                    await asyncio.sleep(self.sampling_interval_seconds)
+                    
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    LOGGER.error(f"Error during sampling: {e}")
+                    await asyncio.sleep(5)  # Wait a bit before retrying
+            
+        except asyncio.CancelledError:
+            LOGGER.info(f"Sampling task cancelled for {self.name}")
+            raise
+        except Exception as e:
+            LOGGER.error(f"Fatal error in sampling task: {e}")
     
     async def _run_checks(self):
         """Run the monitoring loop."""
@@ -328,6 +421,11 @@ class StockAlertEmail(Sensor):
             "check_times": self.check_times,
             "areas_monitored": self.areas,
             "include_image": self.include_image,
+            "empty_threshold": self.empty_threshold,
+            "sampling_window_minutes": self.sampling_window_minutes,
+            "sampling_interval_seconds": self.sampling_interval_seconds,
+            "last_reading_time": str(self.last_reading_time) if self.last_reading_time else "never",
+            "current_percentiles": self.current_percentiles,
             "pid": os.getpid()
         }
         
@@ -383,6 +481,24 @@ class StockAlertEmail(Sensor):
             return datetime.datetime.combine(tomorrow, datetime.time(hour, minute))
         
         return None
+    
+    def _calculate_percentiles(self) -> Dict[str, float]:
+        """Calculate the 99th percentile for each area's readings."""
+        results = {}
+        for area in self.areas:
+            if area in self.readings_buffer and len(self.readings_buffer[area]) > 0:
+                # Convert deque to numpy array for percentile calculation
+                readings_array = np.array(list(self.readings_buffer[area]))
+                if len(readings_array) > 0:
+                    # Calculate 99th percentile
+                    percentile_99 = np.percentile(readings_array, 99)
+                    results[area] = float(percentile_99)
+                else:
+                    results[area] = 0.0
+            else:
+                results[area] = 0.0
+        
+        return results
     
     async def capture_image(self) -> Optional[Dict[str, Any]]:
         """Capture an image from the camera and save it to disk."""
@@ -443,7 +559,7 @@ class StockAlertEmail(Sensor):
             LOGGER.error(f"Error capturing image: {e}")
             return None
     
-    async def send_alert(self, empty_areas: List[str]):
+    async def send_alert(self, empty_areas: List[str], percentiles: Dict[str, float]):
         """Send email alert for empty areas with optional image attachment using SendGrid directly."""
         if not self.sendgrid_api_key:
             LOGGER.error("No SendGrid API key configured, cannot send alert")
@@ -473,11 +589,18 @@ class StockAlertEmail(Sensor):
             # Format the subject with location at the end
             subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
-            # Create the email body
+            # Create the email body with percentile information
             body_text = f"""The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}
 
 Location: {self.location}
-Time: {timestamp}"""
+Time: {timestamp}
+
+Percentile Values (99th percentile, threshold: {self.empty_threshold}):"""
+            
+            # Add percentile data for each empty area
+            for area in sorted_areas:
+                percentile_value = percentiles.get(area, 0.0)
+                body_text += f"\n- {area}: {percentile_value:.2f}"
             
             # Create email message with to_emails directly, inspired by viam-sendgrid-email
             valid_recipients = []
@@ -504,7 +627,16 @@ Time: {timestamp}"""
 <p>The following {self.descriptor.lower()} are empty and need attention: {', '.join(sorted_areas)}</p>
 <p>Location: {self.location}<br>
 Time: {timestamp}</p>
+<p>Percentile Values (99th percentile, threshold: {self.empty_threshold}):</p>
+<ul>
 """
+            
+            # Add percentile data for each empty area in HTML
+            for area in sorted_areas:
+                percentile_value = percentiles.get(area, 0.0)
+                html_content += f"<li>{area}: {percentile_value:.2f}</li>"
+            
+            html_content += "</ul>"
             
             # Add image if available
             if image_info and os.path.exists(image_info["path"]):
@@ -550,52 +682,29 @@ Time: {timestamp}</p>
                 LOGGER.error(f"Traceback: {tb_str}")
     
     async def perform_check(self):
-        """Check for empty areas and send alerts if needed."""
-        # Find the fill sensor dependency
-        fill_sensor = None
-        for name, resource in self.dependencies.items():
-            if "langer_fill" in str(name):
-                fill_sensor = resource
-                break
+        """Check for empty areas based on 99th percentile and send alerts if needed."""
+        # Calculate 99th percentiles for all areas
+        percentiles = self._calculate_percentiles()
         
-        if not fill_sensor:
-            LOGGER.warning(f"langer_fill sensor not available for {self.name}")
-            return
+        # Update current percentiles state for reporting
+        self.current_percentiles = percentiles
         
-        try:
-            # Get readings from fill sensor
-            readings = await fill_sensor.get_readings()
-            
-            # Find empty areas
-            empty_areas = []
-            for area in self.areas:
-                level = None
-                
-                # Try direct access first
-                if area in readings:
-                    level = readings[area]
-                # Try nested structure
-                elif isinstance(readings, dict) and "readings" in readings and area in readings["readings"]:
-                    level = readings["readings"][area]
-                
-                # Check if area is empty
-                if isinstance(level, (int, float)) and level == 0:
-                    empty_areas.append(area)
-            
-            # Update state
-            self.empty_areas = empty_areas
-            self.last_check_time = datetime.datetime.now()
-            self._save_state()
-            
-            # Send alert if needed
-            if empty_areas:
-                LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
-                await self.send_alert(empty_areas)
-            else:
-                LOGGER.info("No empty areas found")
-                
-        except Exception as e:
-            LOGGER.error(f"Error checking stock levels: {e}")
+        # Find empty areas based on percentile values compared to threshold
+        empty_areas = [area for area in self.areas if percentiles.get(area, 0.0) <= self.empty_threshold]
+        
+        # Update state
+        self.empty_areas = empty_areas
+        self.last_check_time = datetime.datetime.now()
+        self._save_state()
+        
+        # Send alert if needed
+        if empty_areas:
+            LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
+            LOGGER.info(f"99th percentile values: {', '.join([f'{a}: {v:.2f}' for a, v in percentiles.items() if a in empty_areas])}")
+            await self.send_alert(empty_areas, percentiles)
+        else:
+            LOGGER.info("No empty areas found based on 99th percentile values")
+            LOGGER.debug(f"Current 99th percentile values: {percentiles}")
     
     async def do_command(self, command: dict, *, timeout: Optional[float] = None, **kwargs) -> dict:
         """Handle custom commands."""
@@ -606,7 +715,8 @@ Time: {timestamp}</p>
             await self.perform_check()
             return {
                 "status": "completed",
-                "empty_areas": self.empty_areas
+                "empty_areas": self.empty_areas,
+                "percentiles": self.current_percentiles
             }
         
         elif cmd == "get_schedule":
@@ -687,6 +797,44 @@ Time: {timestamp}</p>
                     "status": "error",
                     "message": f"Failed to send test email: {str(e)}"
                 }
+        
+        elif cmd == "get_percentiles":
+            # Get current percentile values
+            percentiles = self._calculate_percentiles()
+            self.current_percentiles = percentiles
+            
+            return {
+                "status": "completed",
+                "percentiles": percentiles,
+                "buffer_sizes": {area: len(buffer) for area, buffer in self.readings_buffer.items()},
+                "empty_threshold": self.empty_threshold
+            }
+            
+        elif cmd == "clear_buffer":
+            # Clear reading buffers (useful for testing)
+            area = command.get("area", None)
+            
+            if area and area in self.readings_buffer:
+                # Clear specific area
+                self.readings_buffer[area].clear()
+                return {
+                    "status": "completed",
+                    "message": f"Cleared buffer for area {area}"
+                }
+            elif not area:
+                # Clear all buffers
+                for area in self.readings_buffer:
+                    self.readings_buffer[area].clear()
+                return {
+                    "status": "completed",
+                    "message": "Cleared all reading buffers"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Area {area} not found"
+                }
+                
         else:
             return {
                 "status": "error",
