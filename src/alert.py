@@ -324,20 +324,30 @@ class StockAlertEmail(Sensor):
                     current_time = datetime.datetime.now()
                     self.last_reading_time = current_time
                     
-                    # Process readings for each area
+                    # Track which areas were found in this reading
+                    found_areas = set()
+                    
+                    # Process readings for each area in our configuration
                     for area in self.areas:
                         level = None
                         
                         # Try direct access first
                         if area in readings:
                             level = readings[area]
+                            found_areas.add(area)
                         # Try nested structure
                         elif isinstance(readings, dict) and "readings" in readings and area in readings["readings"]:
                             level = readings["readings"][area]
+                            found_areas.add(area)
                         
                         # Add to buffer if we have a valid reading
                         if isinstance(level, (int, float)):
                             self.readings_buffer[area].append(level)
+                    
+                    # Log if some configured areas were not found
+                    missing_areas = set(self.areas) - found_areas
+                    if missing_areas:
+                        LOGGER.debug(f"Areas not found in sensor readings: {', '.join(missing_areas)}")
                     
                     # Sleep for the configured interval
                     await asyncio.sleep(self.sampling_interval_seconds)
@@ -683,28 +693,70 @@ Time: {timestamp}</p>
     
     async def perform_check(self):
         """Check for empty areas based on 99th percentile and send alerts if needed."""
-        # Calculate 99th percentiles for all areas
-        percentiles = self._calculate_percentiles()
+        # Find the fill sensor dependency
+        fill_sensor = None
+        for name, resource in self.dependencies.items():
+            if "langer_fill" in str(name):
+                fill_sensor = resource
+                break
         
-        # Update current percentiles state for reporting
-        self.current_percentiles = percentiles
+        if not fill_sensor:
+            LOGGER.warning(f"langer_fill sensor not available for {self.name}")
+            return
         
-        # Find empty areas based on percentile values compared to threshold
-        empty_areas = [area for area in self.areas if percentiles.get(area, 0.0) <= self.empty_threshold]
-        
-        # Update state
-        self.empty_areas = empty_areas
-        self.last_check_time = datetime.datetime.now()
-        self._save_state()
-        
-        # Send alert if needed
-        if empty_areas:
-            LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
-            LOGGER.info(f"99th percentile values: {', '.join([f'{a}: {v:.2f}' for a, v in percentiles.items() if a in empty_areas])}")
-            await self.send_alert(empty_areas, percentiles)
-        else:
-            LOGGER.info("No empty areas found based on 99th percentile values")
-            LOGGER.debug(f"Current 99th percentile values: {percentiles}")
+        try:
+            # Get current readings to determine which areas are active
+            current_readings = await fill_sensor.get_readings()
+            
+            # Determine which configured areas are active in the current readings
+            active_areas = []
+            for area in self.areas:
+                if area in current_readings or (isinstance(current_readings, dict) and 
+                                            "readings" in current_readings and 
+                                            area in current_readings["readings"]):
+                    active_areas.append(area)
+            
+            if not active_areas:
+                LOGGER.warning(f"None of the configured areas were found in current readings")
+                return
+            
+            # Calculate 99th percentiles for all active areas
+            percentiles = {}
+            for area in active_areas:
+                if area in self.readings_buffer and len(self.readings_buffer[area]) > 0:
+                    # Convert deque to numpy array for percentile calculation
+                    readings_array = np.array(list(self.readings_buffer[area]))
+                    if len(readings_array) > 0:
+                        # Calculate 99th percentile
+                        percentile_99 = np.percentile(readings_array, 99)
+                        percentiles[area] = float(percentile_99)
+                    else:
+                        percentiles[area] = 0.0
+                else:
+                    percentiles[area] = 0.0
+            
+            # Update current percentiles state for reporting
+            self.current_percentiles = percentiles
+            
+            # Find empty areas based on percentile values compared to threshold (only for active areas)
+            empty_areas = [area for area in active_areas if percentiles.get(area, 0.0) <= self.empty_threshold]
+            
+            # Update state
+            self.empty_areas = empty_areas
+            self.last_check_time = datetime.datetime.now()
+            self._save_state()
+            
+            # Send alert if needed
+            if empty_areas:
+                LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
+                LOGGER.info(f"99th percentile values: {', '.join([f'{a}: {v:.2f}' for a, v in percentiles.items() if a in empty_areas])}")
+                await self.send_alert(empty_areas, percentiles)
+            else:
+                LOGGER.info("No empty areas found based on 99th percentile values")
+                LOGGER.debug(f"Current 99th percentile values: {percentiles}")
+                    
+        except Exception as e:
+            LOGGER.error(f"Error checking stock levels: {e}")
     
     async def do_command(self, command: dict, *, timeout: Optional[float] = None, **kwargs) -> dict:
         """Handle custom commands."""
