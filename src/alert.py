@@ -570,7 +570,7 @@ class StockAlertEmail(Sensor):
             return None
     
     async def send_alert(self, empty_areas: List[str], percentiles: Dict[str, float]):
-        """Send email alert for empty areas with optional image attachment using SendGrid directly."""
+        """Send email alert for empty areas with optional image attachment (SendGrid)."""
         if not self.sendgrid_api_key:
             LOGGER.error("No SendGrid API key configured, cannot send alert")
             return
@@ -599,13 +599,31 @@ class StockAlertEmail(Sensor):
             # Format the subject with location at the end
             subject = f"Empty {self.descriptor}: {', '.join(sorted_areas)} - {self.location}"
             
-            # Create the email body - simplified for end users
-            body_text = f"""The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}
-
-    Location: {self.location}
-    Time: {timestamp}"""
+            # Create email content elements (shared between plain text and HTML)
+            content_parts = {
+                "areas_list": f"The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}",
+                "location": f"Location: {self.location}",
+                "time": f"Time: {timestamp}",
+                "image_note": "See the attached image for review." if image_info and os.path.exists(image_info["path"]) else None
+            }
             
-            # Create email message with to_emails directly
+            # Create plain text version
+            body_text = f"{content_parts['areas_list']}\n\n{content_parts['location']}\n{content_parts['time']}"
+            if content_parts["image_note"]:
+                body_text += f"\n\n{content_parts['image_note']}"
+            
+            # Create HTML version
+            html_content = f"""<html>
+    <body>
+    <p>{content_parts['areas_list']}</p>
+    <p>{content_parts['location']}<br>
+    {content_parts['time']}</p>
+    """
+            if content_parts["image_note"]:
+                html_content += f"<p>{content_parts['image_note']}</p>"
+            html_content += "</body></html>"
+            
+            # Validate recipients
             valid_recipients = []
             for recipient in self.recipients:
                 if not isinstance(recipient, str) or '@' not in recipient:
@@ -617,20 +635,14 @@ class StockAlertEmail(Sensor):
                 LOGGER.error("No valid recipients found, aborting send")
                 return
             
+            # Create email message
             message = Mail(
                 from_email=Email(self.sender_email, self.sender_name),
                 to_emails=valid_recipients,
                 subject=subject,
                 plain_text_content=Content("text/plain", body_text)
             )
-            
-            # Create HTML content - simplified for end users
-            html_content = f"""<html>
-    <body>
-    <p>The following {self.descriptor.lower()} are empty: {', '.join(sorted_areas)}</p>
-    <p>Location: {self.location}<br>
-    Time: {timestamp}</p>
-    """
+            message.add_content(Content("text/html", html_content))
             
             # Add image if available
             if image_info and os.path.exists(image_info["path"]):
@@ -650,17 +662,9 @@ class StockAlertEmail(Sensor):
                     
                     # Add attachment to the message
                     message.add_attachment(attachment)
-                    
-                    # Add reference to HTML
-                    html_content += f"""<p>See the attached image for review.</p>"""
-                    
                     LOGGER.info(f"Added image attachment: {file_name}")
                 except Exception as e:
                     LOGGER.error(f"Error attaching image: {e}")
-            
-            # Complete HTML
-            html_content += "</body></html>"
-            message.add_content(Content("text/html", html_content))
             
             # Log percentile values (for developer reference only)
             percentile_log = ", ".join([f"{a}: {v:.2f}" for a, v in percentiles.items() if a in empty_areas])
