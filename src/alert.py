@@ -4,7 +4,7 @@ import json
 import os
 import base64
 import fasteners
-import numpy as np  # Add numpy for percentile calculations
+import numpy as np
 from typing import Mapping, Optional, Any, List, Dict
 from collections import defaultdict, deque
 import time
@@ -19,8 +19,6 @@ from viam.logging import getLogger
 from viam.media.video import ViamImage
 from PIL import Image
 from io import BytesIO
-
-# Add SendGrid imports
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import (
     Mail, Attachment, FileContent, FileName, 
@@ -68,7 +66,8 @@ class StockAlertEmail(Sensor):
             raise ValueError("camera_name must be specified when include_image is true")
         
         # Return required dependencies
-        deps = ["remote-1:langer_fill"]
+        # Changed from remote-1:langer_fill to just langer_fill
+        deps = ["langer_fill"]
         
         # Add camera dependency if configured
         if include_image and attributes.get("camera_name"):
@@ -77,8 +76,8 @@ class StockAlertEmail(Sensor):
             if ":" in camera_name:
                 deps.append(camera_name)
             else:
-                # Otherwise, assume it's on remote-1
-                deps.append(f"remote-1:{camera_name}")
+                # No remote prefix needed now
+                deps.append(camera_name)
         
         LOGGER.info(f"StockAlertEmail.validate_config returning dependencies: {deps}")
         return deps
@@ -95,7 +94,7 @@ class StockAlertEmail(Sensor):
         # Email configuration
         self.sendgrid_api_key = ""
         self.sender_email = "no-reply@viam.com"
-        self.sender_name = "Stock Alert System"
+        self.sender_name = "Stock Alert Module"
         
         # Camera configuration
         self.camera_name = ""
@@ -103,10 +102,13 @@ class StockAlertEmail(Sensor):
         self.image_width = 640
         self.image_height = 480
         
-        # New threshold configuration
-        self.empty_threshold = 0.0  # Default threshold is 0
-        self.sampling_window_minutes = 5  # Default to 5 minutes before check time
-        self.sampling_interval_seconds = 1  # Default to 1 second between samples
+        # Alert setting defaults
+        # Default threshold is 0
+        self.empty_threshold = 0.0
+        # Default to 5 minutes before check time
+        self.sampling_window_minutes = 5  
+        # Default to 1 second between samples
+        self.sampling_interval_seconds = 1  
         
         # Simplified scheduling
         self.weekdays_only = True
@@ -119,8 +121,10 @@ class StockAlertEmail(Sensor):
         self.last_alert_time = None
         self.last_image_path = None
         
-        # Reading buffer for percentile calculations - using defaultdict of deques
-        self.readings_buffer = defaultdict(lambda: deque(maxlen=300))  # 5 minutes * 60 seconds = 300 readings
+        # Reading buffer for the fill percent percentile calculations
+        # Using defaultdict of deques 
+        # Default settings with 5 minutes * 60 seconds = 300 readings
+        self.readings_buffer = defaultdict(lambda: deque(maxlen=300))  
         self.last_reading_time = None
         self.last_percentiles = {}
         
@@ -225,7 +229,7 @@ class StockAlertEmail(Sensor):
         
         # Email configuration
         self.sender_email = attributes.get("sender_email", "no-reply@viam.com")
-        self.sender_name = attributes.get("sender_name", "Stock Alert System")
+        self.sender_name = attributes.get("sender_name", "Stock Alert Module")
         self.sendgrid_api_key = attributes.get("sendgrid_api_key", "")
         
         # Camera configuration
@@ -260,8 +264,8 @@ class StockAlertEmail(Sensor):
         
         # Direct check times configuration
         self.check_times = attributes.get("check_times", ["08:15", "08:30", "10:15", "10:30", "11:00", 
-                                                      "11:30", "12:00", "12:30", "13:00", "13:30", 
-                                                      "14:00", "14:30", "15:00"])
+                                                          "11:30", "12:00", "12:30", "13:00", "13:30", 
+                                                          "14:00", "14:30", "15:00"])
 
         # Sort the check times to ensure they're in chronological order
         self.check_times = sorted(list(set(self.check_times)))
@@ -324,10 +328,10 @@ class StockAlertEmail(Sensor):
                     current_time = datetime.datetime.now()
                     self.last_reading_time = current_time
                     
-                    # Track which areas were found in this reading
+                    # Track which areas were found within the reading
                     found_areas = set()
                     
-                    # Process readings for each area in our configuration
+                    # Process readings for each area in configuration
                     for area in self.areas:
                         level = None
                         
@@ -340,7 +344,7 @@ class StockAlertEmail(Sensor):
                             level = readings["readings"][area]
                             found_areas.add(area)
                         
-                        # Add to buffer if we have a valid reading
+                        # Add to buffer (if we have a valid reading)
                         if isinstance(level, (int, float)):
                             self.readings_buffer[area].append(level)
                     
@@ -356,7 +360,8 @@ class StockAlertEmail(Sensor):
                     raise
                 except Exception as e:
                     LOGGER.error(f"Error during sampling: {e}")
-                    await asyncio.sleep(5)  # Wait a bit before retrying
+                    # Wait a bit before retrying
+                    await asyncio.sleep(5)
             
         except asyncio.CancelledError:
             LOGGER.info(f"Sampling task cancelled for {self.name}")
@@ -411,7 +416,8 @@ class StockAlertEmail(Sensor):
             raise
         except Exception as e:
             LOGGER.error(f"Error in check loop: {e}")
-            await asyncio.sleep(60)  # Wait before restarting
+             # Wait before restarting
+            await asyncio.sleep(60) 
     
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
         """Get current sensor readings."""
@@ -447,7 +453,8 @@ class StockAlertEmail(Sensor):
     
     def _is_weekday(self, date: datetime.date) -> bool:
         """Check if the given date is a weekday (0=Monday, 6=Sunday)."""
-        return date.weekday() < 5  # 0-4 are weekdays (Monday-Friday)
+        # 0-4 are the weekdays (Monday-Friday)
+        return date.weekday() < 5
     
     def _get_next_check_time(self, current_time: datetime.datetime) -> Optional[datetime.datetime]:
         """Find the next scheduled check time from now."""
