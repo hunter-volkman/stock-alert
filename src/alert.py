@@ -122,7 +122,7 @@ class StockAlertEmail(Sensor):
         # Reading buffer for percentile calculations - using defaultdict of deques
         self.readings_buffer = defaultdict(lambda: deque(maxlen=300))  # 5 minutes * 60 seconds = 300 readings
         self.last_reading_time = None
-        self.current_percentiles = {}
+        self.last_percentiles = {}
         
         # State persistence
         self.state_dir = os.path.join(os.path.expanduser("~"), ".stock-alert")
@@ -163,7 +163,7 @@ class StockAlertEmail(Sensor):
                             self.total_alerts_sent = state.get("total_alerts_sent", 0)
                             self.empty_areas = state.get("empty_areas", [])
                             self.last_image_path = state.get("last_image_path")
-                            self.current_percentiles = state.get("current_percentiles", {})
+                            self.last_percentiles = state.get("last_percentiles", {})
                             
                         LOGGER.info(f"Loaded state from {self.state_file}")
                     finally:
@@ -190,7 +190,7 @@ class StockAlertEmail(Sensor):
                         "total_alerts_sent": self.total_alerts_sent,
                         "empty_areas": self.empty_areas,
                         "last_image_path": self.last_image_path,
-                        "current_percentiles": self.current_percentiles
+                        "last_percentiles": self.last_percentiles
                     }
                     
                     # First write to a temporary file
@@ -435,7 +435,7 @@ class StockAlertEmail(Sensor):
             "sampling_window_minutes": self.sampling_window_minutes,
             "sampling_interval_seconds": self.sampling_interval_seconds,
             "last_reading_time": str(self.last_reading_time) if self.last_reading_time else "never",
-            "current_percentiles": self.current_percentiles,
+            "last_percentiles": self.last_percentiles,
             "pid": os.getpid()
         }
         
@@ -727,8 +727,8 @@ class StockAlertEmail(Sensor):
                 else:
                     percentiles[area] = 0.0
             
-            # Update current percentiles state for reporting
-            self.current_percentiles = percentiles
+            # Update last percentiles state for reporting
+            self.last_percentiles = percentiles
             
             # Find empty areas based on percentile values compared to threshold (only for active areas)
             empty_areas = [area for area in active_areas if percentiles.get(area, 0.0) <= self.empty_threshold]
@@ -760,7 +760,7 @@ class StockAlertEmail(Sensor):
             return {
                 "status": "completed",
                 "empty_areas": self.empty_areas,
-                "percentiles": self.current_percentiles
+                "percentiles": self.last_percentiles
             }
         
         elif cmd == "get_schedule":
@@ -843,9 +843,9 @@ class StockAlertEmail(Sensor):
                 }
         
         elif cmd == "get_percentiles":
-            # Get current percentile values
+            # Get last percentile values
             percentiles = self._calculate_percentiles()
-            self.current_percentiles = percentiles
+            self.last_percentiles = percentiles
             
             return {
                 "status": "completed",
