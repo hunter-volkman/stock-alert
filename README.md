@@ -4,18 +4,21 @@ This module monitors stock levels using a sensor (e.g., `langer_fill`) and sends
 
 ## Model hunter:stock-alert:email
 
-Sends email alerts via SendGrid when configured areas of interest have zero stock levels, with optional image attachments from a camera. Alerts are scheduled at specific times, and the module maintains state persistence across restarts.
+Sends email alerts via SendGrid when configured areas of interest have insufficient stock levels (based on percentile calculations), with optional image attachments from a camera. Alerts are scheduled at specific times, and the module maintains state persistence across restarts.
 
 ### Configuration
 
 ```json
 {
   "location": "389 5th Ave, New York, NY",
-  "recipients": ["hunter.volkman@viam.com"],
+  "recipients": ["example@viam.com"],
   "areas": ["A-1", "A-2", "A-3"],
   "descriptor": "Shelves",
   "weekdays_only": true,
   "check_times": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  "empty_threshold": 0.0,
+  "sampling_window_minutes": 5,
+  "sampling_interval_seconds": 1,
   "include_image": true,
   "camera_name": "ffmpeg",
   "image_width": 640,
@@ -36,6 +39,9 @@ Sends email alerts via SendGrid when configured areas of interest have zero stoc
 | `descriptor` | string | Optional  | Descriptor for areas in alerts (e.g., "Shelves"). Default: "Areas of Interest". |
 | `weekdays_only` | bool | Optional  | Only run checks on weekdays (Mon-Fri). Default: `true`. |
 | `check_times` | string | Optional  | Specific times (HH:MM) to check stock levels, sorted chronologically. Default: ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"]. |
+| `empty_threshold` | float | Optional  | Threshold below which an area is considered empty. Default: 0.0. |
+| `sampling_window_minutes` | int | Optional  | Minutes to collect samples for percentile calculation. Default: 5. |
+| `sampling_interval_seconds` | int | Optional  | Seconds between samples. Default: 1. |
 | `include_image` | bool | Optional  | Whether to include a camera snapshot in alerts. Default: `false`. |
 | `camera_name` | string | Optional  | Name of the camera component to capture images (required if `include_image` is true). |
 | `image_width` | int | Optional  | Width of captured images in pixels. Default: 640. |
@@ -56,11 +62,14 @@ Sends email alerts via SendGrid when configured areas of interest have zero stoc
   "model": "hunter:stock-alert:email",
   "attributes": {
     "location": "389 5th Ave, New York, NY",
-    "recipients": ["hunter.volkman@viam.com"],
+    "recipients": ["example@viam.com"],
     "areas": ["A-1", "A-2", "A-3", "B-1", "B-2", "B-3", "C-1", "C-2", "C-3", "D-1", "D-2", "D-3"],
     "descriptor": "Shelves",
     "weekdays_only": true,
     "check_times": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+    "empty_threshold": 0.0,
+    "sampling_window_minutes": 5,
+    "sampling_interval_seconds": 1,
     "include_image": true,
     "camera_name": "ffmpeg",
     "image_width": 640,
@@ -74,13 +83,13 @@ Sends email alerts via SendGrid when configured areas of interest have zero stoc
 ```
 
 #### Dependencies
-* `langer_fill`: Sensor component (`viam-soleng:stock-fill:fill-percent`).
-* `camera` (optional): Camera component (e.g., `ffmpeg`) for capturing images if include_image is enabled.
+* `langer_fill`: Sensor component (typically viam-soleng:stock-fill:fill-percent).
+* `camera` (optional): Camera component (e.g., ffmpeg) for capturing images if `include_image` is enabled.
 
 
 #### Usage
 1. Configure the email model with your location, recipients, areas, and check times.
-2. Ensure the langer_fill sensor and, if enabled, a camera component are available on the same machine.
+2. Ensure the langer_fill sensor and, if enabled, a camera component are available.
 3. Provide a valid SendGrid API key for email functionality.
 4. The module will check stock levels at the specified check_times and send alerts for empty areas, optionally including camera snapshots.
 
@@ -174,7 +183,7 @@ Returns:
 {
   "status": "completed",
   "message": "Test email sent with status code 202",
-  "recipients": ["hunter.volkman@viam.com"]
+  "recipients": ["example@viam.com"]
 }
 ```
 
@@ -261,8 +270,6 @@ The module provides comprehensive readings that can be used for monitoring:
   "check_times": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
   "areas_monitored": ["A-1", "A-2", "A-3"],
   "include_image": true,
-  "camera_name": "ffmpeg",
-  "last_image_path": "/home/user/.stock-alert/images/20250407_153500_langer_alert.jpg",
   "empty_threshold": 0.0,
   "sampling_window_minutes": 5,
   "sampling_interval_seconds": 1,
@@ -273,18 +280,18 @@ The module provides comprehensive readings that can be used for monitoring:
 ```
 
 ### Implementation Details
-* Scheduling: Checks occur at specific times (check_times) with support for weekday-only operation.
-* State Persistence: Uses fasteners for inter-process locking and saves state to ~/.stock-alert/*.json files, including last check times, alert history, and image paths.
-* Image Capture: Supports capturing images from Viam cameras (e.g., ffmpeg) and attaching them to emails if include_image is enabled.
-* Email Alerts: Uses SendGrid for sending emails, requiring a valid API key.
-* Dependency Handling: Robustly manages dependencies like sensors and cameras.
-* Threshold Detection: Uses the 99th percentile of readings over the sampling window to determine if an area is empty.
+* **Advanced Detection**: Uses the 99th percentile of readings over a configurable sampling window to reliably determine if an area is empty.
+* **Scheduling**: Checks occur at specific times (check_times) with support for weekday-only operation.
+* **State Persistence**: Uses fasteners for inter-process locking and saves state to ~/.stock-alert/*.json files, including last check times, alert history, and image paths.
+* **Image Capture**: Supports capturing images from Viam cameras (e.g., ffmpeg) and attaching them to emails if include_image is enabled.
+* **Email Alerts**: Uses SendGrid for sending emails with both HTML and plain text versions.
+Dependency Handling: Robustly manages dependencies like sensors and cameras.
 
 ### Known Issues and Debugging
 
-* Email Sending Error: If you see an error like "Please use a To, From, Cc or Bcc object", this indicates an issue with how email recipients are configured. Ensure that each recipient in the configuration is a valid email string.
-* Image Type Warning: The warning "Unsupported image type" suggests that the image returned by the camera might not be handled correctly. The module attempts to handle different image formats, but may need to be updated for specific camera implementations.
-* State and Locking: The state persistence uses file locking with fasteners, which should prevent race conditions, but ensure the lock files (*.lock) are not corrupted or inaccessible.
-* Dependencies: Verify that the langer_fill sensor and camera (if used) are correctly configured and accessible in the Viam robot configuration.
+* **Email Sending Error**: If you see an error like "Please use a To, From, Cc or Bcc object", this indicates an issue with how email recipients are configured. Ensure that each recipient in the configuration is a valid email string.
+* **Image Type Warning**: The warning "Unsupported image type" suggests that the image returned by the camera might not be handled correctly. The module attempts to handle different image formats, but may need to be updated for specific camera implementations.
+* **State and Locking**: The state persistence uses file locking with fasteners, which should prevent race conditions, but ensure the lock files (*.lock) are not corrupted or inaccessible.
+* **Dependencies**: Verify that the langer_fill sensor and camera (if used) are correctly configured and accessible.
 
-For further debugging, check the SendGrid API key, ensure the camera is returning the expected image format, and review the `dependencies` mapping in `reconfigure` to ensure all required components are present.
+For further debugging, check the SendGrid API key, ensure the camera is returning the expected image format, and review the logs for any error messages.
