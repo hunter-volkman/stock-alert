@@ -15,7 +15,8 @@ Sends email alerts via SendGrid when configured areas of interest have insuffici
   "areas": ["A-1", "A-2", "A-3"],
   "descriptor": "Shelves",
   "weekdays_only": true,
-  "check_times": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  "check_times_weekday": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  "check_times_weekend": ["08:00", "09:00", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
   "empty_threshold": 0.0,
   "sampling_window_minutes": 5,
   "sampling_interval_seconds": 1,
@@ -38,7 +39,8 @@ Sends email alerts via SendGrid when configured areas of interest have insuffici
 | `areas` | list[str] | Required  | List of specific area identifiers to monitor (e.g., "A-1"). |
 | `descriptor` | string | Optional  | Descriptor for areas in alerts (e.g., "Shelves"). Default: "Areas of Interest". |
 | `weekdays_only` | bool | Optional  | Only run checks on weekdays (Mon-Fri). Default: `true`. |
-| `check_times` | string | Optional  | Specific times (HH:MM) to check stock levels, sorted chronologically. Default: ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"]. |
+| `check_times_weekday` | string | Optional  | Specific times (HH:MM) to check stock levels, sorted chronologically. Default: ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"]. |
+| `check_times_weekend` | string | Optional  | Specific times (HH:MM) to check stock levels, sorted chronologically. Default: ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00"]. |
 | `empty_threshold` | float | Optional  | Threshold below which an area is considered empty. Default: 0.0. |
 | `sampling_window_minutes` | int | Optional  | Minutes to collect samples for percentile calculation. Default: 5. |
 | `sampling_interval_seconds` | int | Optional  | Seconds between samples. Default: 1. |
@@ -66,7 +68,8 @@ Sends email alerts via SendGrid when configured areas of interest have insuffici
     "areas": ["A-1", "A-2", "A-3", "B-1", "B-2", "B-3", "C-1", "C-2", "C-3", "D-1", "D-2", "D-3"],
     "descriptor": "Shelves",
     "weekdays_only": true,
-    "check_times": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+    "check_times_weekday": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+    "check_times_weekend": ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00"],
     "empty_threshold": 0.0,
     "sampling_window_minutes": 5,
     "sampling_interval_seconds": 1,
@@ -91,7 +94,7 @@ Sends email alerts via SendGrid when configured areas of interest have insuffici
 1. Configure the email model with your location, recipients, areas, and check times.
 2. Ensure the langer_fill sensor and, if enabled, a camera component are available.
 3. Provide a valid SendGrid API key for email functionality.
-4. The module will check stock levels at the specified check_times and send alerts for empty areas, optionally including camera snapshots.
+4. The module will check stock levels at the specified check times and send alerts for empty areas, optionally including camera snapshots.
 
 ### DoCommand
 
@@ -133,7 +136,8 @@ Returns:
 {
   "status": "completed",
   "weekdays_only": true,
-  "check_times": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  "check_times_weekday": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  "check_times_weekend": ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00"],
   "next_check_time": "2025-04-07 08:15:00"
 }
 ```
@@ -267,7 +271,8 @@ The module provides comprehensive readings that can be used for monitoring:
   "total_alerts_sent": 5,
   "last_alert_time": "2025-04-07 15:30:00",
   "weekdays_only": true,
-  "check_times": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  "check_times_weekday": ["08:15", "08:30", "10:15", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  "check_times_weekend": ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00"]
   "areas_monitored": ["A-1", "A-2", "A-3"],
   "include_image": true,
   "empty_threshold": 0.0,
@@ -281,7 +286,7 @@ The module provides comprehensive readings that can be used for monitoring:
 
 ### Implementation Details
 * **Advanced Detection**: Uses the 99th percentile of readings over a configurable sampling window to reliably determine if an area is empty.
-* **Scheduling**: Checks occur at specific times (check_times) with support for weekday-only operation.
+* **Scheduling**: Checks occur at specific times (check times) with support for weekday-only operation.
 * **State Persistence**: Uses fasteners for inter-process locking and saves state to ~/.stock-alert/*.json files, including last check times, alert history, and image paths.
 * **Image Capture**: Supports capturing images from Viam cameras (e.g., ffmpeg) and attaching them to emails if include_image is enabled.
 * **Email Alerts**: Uses SendGrid for sending emails with both HTML and plain text versions.
