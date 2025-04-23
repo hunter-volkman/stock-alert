@@ -112,7 +112,10 @@ class StockAlertEmail(Sensor):
         
         # Simplified scheduling
         self.weekdays_only = True
-        self.check_times = []
+        # self.check_times = []
+        # Replace check_times with separate weekday and weekend lists
+        self.check_times_weekday = []
+        self.check_times_weekend = []
         
         # State
         self.last_check_time = None
@@ -262,6 +265,7 @@ class StockAlertEmail(Sensor):
         if isinstance(self.weekdays_only, str):
             self.weekdays_only = self.weekdays_only.lower() == "true"
         
+        """
         # Direct check times configuration
         self.check_times = attributes.get("check_times", ["08:15", "08:30", "10:15", "10:30", "11:00", 
                                                           "11:30", "12:00", "12:30", "13:00", "13:30", 
@@ -269,6 +273,17 @@ class StockAlertEmail(Sensor):
 
         # Sort the check times to ensure they're in chronological order
         self.check_times = sorted(list(set(self.check_times)))
+        """
+
+         # New configuration with weekday/weekend support
+        self.check_times_weekday = attributes.get("check_times_weekday", ["07:00", "08:00", "09:00", "10:00", "11:00", 
+                                                        "12:00", "13:00", "14:00", "15:00", "16:00"])
+        self.check_times_weekend = attributes.get("check_times_weekend", ["08:00", "09:00", "10:00", 
+                                                        "11:00", "12:00", "13:00", "14:00", "15:00"])
+
+        # Sort the check times to ensure they're in chronological order
+        self.check_times_weekday = sorted(list(set(self.check_times_weekday)))
+        self.check_times_weekend = sorted(list(set(self.check_times_weekend)))
         
         # Store dependencies
         self.dependencies = dependencies
@@ -282,7 +297,9 @@ class StockAlertEmail(Sensor):
         # Log configuration details
         LOGGER.info(f"Configured {self.name} for location '{self.location}'")
         LOGGER.info(f"Weekdays only: {self.weekdays_only}")
-        LOGGER.info(f"Check times: {', '.join(self.check_times)}")
+        # LOGGER.info(f"Check times: {', '.join(self.check_times)}")
+        LOGGER.info(f"Weekday check times: {', '.join(self.check_times_weekday)}")
+        LOGGER.info(f"Weekend check times: {', '.join(self.check_times_weekend)}")
         LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
         LOGGER.info(f"Empty threshold: {self.empty_threshold}")
         LOGGER.info(f"Sampling window: {self.sampling_window_minutes} minutes")
@@ -422,6 +439,7 @@ class StockAlertEmail(Sensor):
     async def get_readings(self, *, extra: Optional[Mapping[str, Any]] = None, timeout: Optional[float] = None, **kwargs) -> Mapping[str, SensorReading]:
         """Get current sensor readings."""
         current_time = datetime.datetime.now()
+        is_today_weekday = self._is_weekday(current_time.date())
         
         # Calculate next check time
         next_check = self._get_next_check_time(current_time)
@@ -434,7 +452,9 @@ class StockAlertEmail(Sensor):
             "total_alerts_sent": self.total_alerts_sent,
             "last_alert_time": str(self.last_alert_time) if self.last_alert_time else "never",
             "weekdays_only": self.weekdays_only,
-            "check_times": self.check_times,
+            "check_times_weekday": self.check_times_weekday,
+            "check_times_weekend": self.check_times_weekend,
+            "current_day_type": "weekday" if is_today_weekday else "weekend",
             "areas_monitored": self.areas,
             "include_image": self.include_image,
             "empty_threshold": self.empty_threshold,
@@ -461,8 +481,11 @@ class StockAlertEmail(Sensor):
         today = current_time.date()
         current_time_str = current_time.strftime("%H:%M")
         
-        # Skip weekends if weekdays_only is True
-        if self.weekdays_only and not self._is_weekday(today):
+        # Determine if today is a weekday
+        is_today_weekday = self._is_weekday(today)
+        
+        # If weekdays_only is True and today is not a weekday, find the next weekday
+        if self.weekdays_only and not is_today_weekday:
             # Find next weekday
             days_ahead = 1
             while not self._is_weekday(today + datetime.timedelta(days=days_ahead)):
@@ -470,30 +493,38 @@ class StockAlertEmail(Sensor):
             next_day = today + datetime.timedelta(days=days_ahead)
             
             # Return first check time on next weekday
-            if self.check_times:
-                time_str = self.check_times[0]
+            if self.check_times_weekday:
+                time_str = self.check_times_weekday[0]
                 hour, minute = map(int, time_str.split(":"))
                 return datetime.datetime.combine(next_day, datetime.time(hour, minute))
             return None
         
-        # Find next check time today
-        for time_str in self.check_times:
+        # Select the appropriate check times list for today
+        today_check_times = self.check_times_weekday if is_today_weekday else self.check_times_weekend
+        
+        # Find the next check time (today)
+        for time_str in today_check_times:
             if time_str > current_time_str:
                 hour, minute = map(int, time_str.split(":"))
                 return datetime.datetime.combine(today, datetime.time(hour, minute))
         
         # If no more today, get tomorrow's first time
         tomorrow = today + datetime.timedelta(days=1)
+        is_tomorrow_weekday = self._is_weekday(tomorrow)
         
         # Skip to next weekday if needed
-        if self.weekdays_only and not self._is_weekday(tomorrow):
+        if self.weekdays_only and not is_tomorrow_weekday:
             days_ahead = 1
             while not self._is_weekday(tomorrow + datetime.timedelta(days=days_ahead - 1)):
                 days_ahead += 1
             tomorrow = today + datetime.timedelta(days=days_ahead)
+            is_tomorrow_weekday = True  # We made sure it's a weekday
         
-        if self.check_times:
-            time_str = self.check_times[0]
+        # Get tomorrow's check times
+        tomorrow_check_times = self.check_times_weekday if is_tomorrow_weekday else self.check_times_weekend
+        
+        if tomorrow_check_times:
+            time_str = tomorrow_check_times[0]
             hour, minute = map(int, time_str.split(":"))
             return datetime.datetime.combine(tomorrow, datetime.time(hour, minute))
         
@@ -773,10 +804,14 @@ class StockAlertEmail(Sensor):
         elif cmd == "get_schedule":
             # Return check schedule
             next_check = self._get_next_check_time(datetime.datetime.now())
+            current_day = datetime.datetime.now().date()
+            is_weekday = self._is_weekday(current_day)
             return {
                 "status": "completed", 
                 "weekdays_only": self.weekdays_only,
-                "check_times": self.check_times,
+                "check_times_weekday": self.check_times_weekday,
+                "check_times_weekend": self.check_times_weekend,
+                "current_day_type": "weekday" if is_weekday else "weekend",
                 "next_check_time": str(next_check) if next_check else "none scheduled"
             }
         
