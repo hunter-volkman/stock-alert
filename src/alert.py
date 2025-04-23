@@ -275,7 +275,7 @@ class StockAlertEmail(Sensor):
         self.check_times = sorted(list(set(self.check_times)))
         """
 
-         # New configuration with weekday/weekend support
+        # New configuration with weekday/weekend support
         self.check_times_weekday = attributes.get("check_times_weekday", ["07:00", "08:00", "09:00", "10:00", "11:00", 
                                                         "12:00", "13:00", "14:00", "15:00", "16:00"])
         self.check_times_weekend = attributes.get("check_times_weekend", ["08:00", "09:00", "10:00", 
