@@ -208,7 +208,7 @@ class StockAlertEmail(Sensor):
                     # Then atomically replace the original file
                     os.replace(temp_file, self.state_file)
                     
-                    LOGGER.debug(f"Saved state to {self.state_file}")
+                    LOGGER.info(f"Saved state to {self.state_file}")
                 finally:
                     lock.release()
             else:
@@ -361,7 +361,7 @@ class StockAlertEmail(Sensor):
                     # Log if some configured areas were not found
                     missing_areas = set(self.areas) - found_areas
                     if missing_areas:
-                        LOGGER.debug(f"Areas not found in sensor readings: {', '.join(missing_areas)}")
+                        LOGGER.info(f"Areas not found in sensor readings: {', '.join(missing_areas)}")
                     
                     # Sleep for the configured interval
                     await asyncio.sleep(self.sampling_interval_seconds)
@@ -852,7 +852,7 @@ class StockAlertEmail(Sensor):
             else:
                 # Logs for no alert
                 LOGGER.info(f"No empty areas found based on {method_description}")
-                LOGGER.debug(f"Current {method_description}: {percentiles}")
+                LOGGER.info(f"Current {method_description}: {percentiles}")
                     
         except Exception as e:
             LOGGER.error(f"Error checking stock levels: {e}")
