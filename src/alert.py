@@ -248,6 +248,9 @@ class StockAlertEmail(Sensor):
         self.empty_threshold = float(attributes.get("empty_threshold", 0.0))
         self.sampling_window_minutes = int(attributes.get("sampling_window_minutes", 5))
         self.sampling_interval_seconds = int(attributes.get("sampling_interval_seconds", 1))
+
+        # New aggregation method
+        self.aggregation_method = attributes.get("aggregation_method", "pct99")
         
         # Calculate buffer size based on config
         buffer_size = self.sampling_window_minutes * 60 // self.sampling_interval_seconds
@@ -265,16 +268,6 @@ class StockAlertEmail(Sensor):
         if isinstance(self.weekdays_only, str):
             self.weekdays_only = self.weekdays_only.lower() == "true"
         
-        """
-        # Direct check times configuration
-        self.check_times = attributes.get("check_times", ["08:15", "08:30", "10:15", "10:30", "11:00", 
-                                                          "11:30", "12:00", "12:30", "13:00", "13:30", 
-                                                          "14:00", "14:30", "15:00"])
-
-        # Sort the check times to ensure they're in chronological order
-        self.check_times = sorted(list(set(self.check_times)))
-        """
-
         # New configuration with weekday/weekend support
         self.check_times_weekday = attributes.get("check_times_weekday", ["07:00", "08:00", "09:00", "10:00", "11:00", 
                                                         "12:00", "13:00", "14:00", "15:00", "16:00"])
@@ -297,13 +290,13 @@ class StockAlertEmail(Sensor):
         # Log configuration details
         LOGGER.info(f"Configured {self.name} for location '{self.location}'")
         LOGGER.info(f"Weekdays only: {self.weekdays_only}")
-        # LOGGER.info(f"Check times: {', '.join(self.check_times)}")
         LOGGER.info(f"Weekday check times: {', '.join(self.check_times_weekday)}")
         LOGGER.info(f"Weekend check times: {', '.join(self.check_times_weekend)}")
         LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
         LOGGER.info(f"Empty threshold: {self.empty_threshold}")
         LOGGER.info(f"Sampling window: {self.sampling_window_minutes} minutes")
         LOGGER.info(f"Sampling interval: {self.sampling_interval_seconds} seconds")
+        LOGGER.info(f"Aggregation method: {self.aggregation_method}")
         LOGGER.info(f"Will send alerts to: {', '.join(self.recipients)}")
         
         if self.sendgrid_api_key:
@@ -531,22 +524,106 @@ class StockAlertEmail(Sensor):
         return None
     
     def _calculate_percentiles(self) -> Dict[str, float]:
-        """Calculate the 99th percentile for each area's readings."""
+        """Calculate values for each area based on configured aggregation method."""
         results = {}
         for area in self.areas:
             if area in self.readings_buffer and len(self.readings_buffer[area]) > 0:
                 # Convert deque to numpy array for percentile calculation
                 readings_array = np.array(list(self.readings_buffer[area]))
                 if len(readings_array) > 0:
-                    # Calculate 99th percentile
-                    percentile_99 = np.percentile(readings_array, 99)
-                    results[area] = float(percentile_99)
+                    # Apply aggrgeation method
+                    if self.aggregation_method == "max":
+                        value = float(np.max(readings_array))
+                    elif self.aggregation_method == "min":
+                        value = float(np.min(readings_array))
+                    elif self.aggregation_method == "avg":
+                        value = float(np.mean(readings_array))
+                    elif self.aggregation_method == "median":
+                        value = float(np.median(readings_array))
+                    elif self.aggregation_method == "pct95":
+                        value = float(np.percentile(readings_array, 95))
+                    elif self.aggregation_method == "pct99":
+                        value = float(np.percentile(readings_array, 99))
+                    elif self.aggregation_method == "first":
+                        value = float(readings_array[0])
+                    elif self.aggregation_method == "last":
+                        value = float(readings_array[-1])
+                    else:
+                        # Default to 99th percentile
+                        value = float(np.percentile(readings_array, 99))
+                    
+                    results[area] = value
                 else:
                     results[area] = 0.0
             else:
                 results[area] = 0.0
         
         return results
+    
+    def _save_alert_history(self, empty_areas: List[str], percentiles: Dict[str, float]):
+        """Save detailed alert history to a log file."""
+        # Create logs directory if it doesn't exist
+        logs_dir = os.path.join(self.state_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Generate timestamp for filename
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(logs_dir, f"alert_{timestamp}.json")
+        
+        # Prepare alert data
+        alert_data = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "location": self.location,
+            "empty_areas": empty_areas,
+            "all_percentiles": percentiles,
+            "threshold": self.empty_threshold,
+            "aggregation_method": self.aggregation_method,
+            "image_path": self.last_image_path if self.include_image else None,
+            "areas_monitored": self.areas
+        }
+        
+        # Save alert data to file
+        with open(log_file, "w") as f:
+            json.dump(alert_data, f, indent=2)
+        
+        LOGGER.info(f"Alert history saved to {log_file}")
+    
+    def _log_buffer_statistics(self):
+        """Log statistics about the readings buffer for each area."""
+        stats = {}
+        
+        for area in self.areas:
+            if area in self.readings_buffer and len(self.readings_buffer[area]) > 0:
+                readings_array = np.array(list(self.readings_buffer[area]))
+                if len(readings_array) > 0:
+                    # Calculate statistics
+                    stats[area] = {
+                        "count": len(readings_array),
+                        "min": float(np.min(readings_array)),
+                        "max": float(np.max(readings_array)),
+                        "mean": float(np.mean(readings_array)),
+                        "median": float(np.median(readings_array)),
+                        "pct95": float(np.percentile(readings_array, 95)),
+                        "pct99": float(np.percentile(readings_array, 99)),
+                        "first": float(readings_array[0]),
+                        "last": float(readings_array[-1])
+                    }
+                else:
+                    stats[area] = {"count": 0}
+            else:
+                stats[area] = {"count": 0}
+        
+        # Log summary statistics
+        buffer_counts = ", ".join([f"{a}: {s['count']}" for a, s in stats.items()])
+        LOGGER.info(f"Buffer sizes: {buffer_counts}")
+        
+        # Log detailed statistics for non-empty buffers
+        for area, area_stats in stats.items():
+            if area_stats["count"] > 0:
+                LOGGER.info(f"Stats for {area}: min={area_stats['min']:.2f}, max={area_stats['max']:.2f}, "
+                       f"mean={area_stats['mean']:.2f}, median={area_stats['median']:.2f}, "
+                       f"pct95={area_stats['pct95']:.2f}, pct99={area_stats['pct99']:.2f}, "
+                       f"first={area_stats['first']:.2f}, last={area_stats['last']:.2f}")
     
     async def capture_image(self) -> Optional[Dict[str, Any]]:
         """Capture an image from the camera and save it to disk."""
@@ -624,6 +701,9 @@ class StockAlertEmail(Sensor):
         
         # Save state after image capture
         self._save_state()
+
+        # Save alert history after state
+        self._save_alert_history(empty_areas, percentiles)
         
         try:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -707,6 +787,10 @@ class StockAlertEmail(Sensor):
             # Log percentile values (for developer reference only)
             percentile_log = ", ".join([f"{a}: {v:.2f}" for a, v in percentiles.items() if a in empty_areas])
             LOGGER.info(f"Percentiles for empty areas: {percentile_log} (threshold: {self.empty_threshold})")
+
+            # Log percentile values for all areas for debugging...
+            all_percentile_log = ", ".join([f"{a}: {v:.2f}" for a, v in percentiles.items()])
+            LOGGER.info(f"All percentiles: {all_percentile_log}")
             
             # Send the email
             sg = SendGridAPIClient(self.sendgrid_api_key)
@@ -722,7 +806,7 @@ class StockAlertEmail(Sensor):
                 LOGGER.error(f"Traceback: {tb_str}")
     
     async def perform_check(self):
-        """Check for empty areas based on 99th percentile and send alerts if needed."""
+        """Check for empty areas based on the configured aggregation method and send alerts if needed."""
         # Find the fill sensor dependency
         fill_sensor = None
         for name, resource in self.dependencies.items():
@@ -735,7 +819,7 @@ class StockAlertEmail(Sensor):
             return
         
         try:
-            # Get current readings to determine which areas are active
+            # Get current readings to determine which areas are active (currently)
             current_readings = await fill_sensor.get_readings()
             
             # Determine which configured areas are active in the current readings
@@ -776,14 +860,39 @@ class StockAlertEmail(Sensor):
             self.last_check_time = datetime.datetime.now()
             self._save_state()
             
+            # Set description based on aggregation method
+            if self.aggregation_method == "max":
+                method_description = "maximum values"
+            elif self.aggregation_method == "min":
+                method_description = "minimum values"
+            elif self.aggregation_method == "avg":
+                method_description = "average values"
+            elif self.aggregation_method == "median":
+                method_description = "median values" 
+            elif self.aggregation_method == "pct95":
+                method_description = "95th percentile values"
+            elif self.aggregation_method == "pct99":
+                method_description = "99th percentile values"
+            elif self.aggregation_method == "first":
+                method_description = "first values"
+            elif self.aggregation_method == "last":
+                method_description = "last values"
+            else:
+                method_description = "calculated values"
+                
             # Send alert if needed
             if empty_areas:
+                # Logs for alert
                 LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
-                LOGGER.info(f"99th percentile values: {', '.join([f'{a}: {v:.2f}' for a, v in percentiles.items() if a in empty_areas])}")
+                LOGGER.info(f"{method_description.capitalize()} for empty areas: {', '.join([f'{a}: {v:.2f}' for a, v in percentiles.items() if a in empty_areas])} (threshold: {self.empty_threshold})")
                 await self.send_alert(empty_areas, percentiles)
             else:
-                LOGGER.info("No empty areas found based on 99th percentile values")
-                LOGGER.debug(f"Current 99th percentile values: {percentiles}")
+                # Logs for no alert
+                LOGGER.info(f"No empty areas found based on {method_description}")
+                LOGGER.info(f"Current {method_description}: {percentiles}")
+            
+            # Log buffer statistics
+            self._log_buffer_statistics()
                     
         except Exception as e:
             LOGGER.error(f"Error checking stock levels: {e}")
