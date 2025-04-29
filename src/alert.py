@@ -248,6 +248,9 @@ class StockAlertEmail(Sensor):
         self.empty_threshold = float(attributes.get("empty_threshold", 0.0))
         self.sampling_window_minutes = int(attributes.get("sampling_window_minutes", 5))
         self.sampling_interval_seconds = int(attributes.get("sampling_interval_seconds", 1))
+
+        # New aggregation method
+        self.aggregation_method = attributes.get("aggregation_method", "pct99")
         
         # Calculate buffer size based on config
         buffer_size = self.sampling_window_minutes * 60 // self.sampling_interval_seconds
@@ -265,16 +268,6 @@ class StockAlertEmail(Sensor):
         if isinstance(self.weekdays_only, str):
             self.weekdays_only = self.weekdays_only.lower() == "true"
         
-        """
-        # Direct check times configuration
-        self.check_times = attributes.get("check_times", ["08:15", "08:30", "10:15", "10:30", "11:00", 
-                                                          "11:30", "12:00", "12:30", "13:00", "13:30", 
-                                                          "14:00", "14:30", "15:00"])
-
-        # Sort the check times to ensure they're in chronological order
-        self.check_times = sorted(list(set(self.check_times)))
-        """
-
         # New configuration with weekday/weekend support
         self.check_times_weekday = attributes.get("check_times_weekday", ["07:00", "08:00", "09:00", "10:00", "11:00", 
                                                         "12:00", "13:00", "14:00", "15:00", "16:00"])
@@ -297,13 +290,13 @@ class StockAlertEmail(Sensor):
         # Log configuration details
         LOGGER.info(f"Configured {self.name} for location '{self.location}'")
         LOGGER.info(f"Weekdays only: {self.weekdays_only}")
-        # LOGGER.info(f"Check times: {', '.join(self.check_times)}")
         LOGGER.info(f"Weekday check times: {', '.join(self.check_times_weekday)}")
         LOGGER.info(f"Weekend check times: {', '.join(self.check_times_weekend)}")
         LOGGER.info(f"Monitoring areas: {', '.join(self.areas)}")
         LOGGER.info(f"Empty threshold: {self.empty_threshold}")
         LOGGER.info(f"Sampling window: {self.sampling_window_minutes} minutes")
         LOGGER.info(f"Sampling interval: {self.sampling_interval_seconds} seconds")
+        LOGGER.info(f"Aggregation method: {self.aggregation_method}")
         LOGGER.info(f"Will send alerts to: {', '.join(self.recipients)}")
         
         if self.sendgrid_api_key:
@@ -531,22 +524,69 @@ class StockAlertEmail(Sensor):
         return None
     
     def _calculate_percentiles(self) -> Dict[str, float]:
-        """Calculate the 99th percentile for each area's readings."""
+        """Calculate values for each area based on configured aggregation method."""
         results = {}
         for area in self.areas:
             if area in self.readings_buffer and len(self.readings_buffer[area]) > 0:
                 # Convert deque to numpy array for percentile calculation
                 readings_array = np.array(list(self.readings_buffer[area]))
                 if len(readings_array) > 0:
-                    # Calculate 99th percentile
-                    percentile_99 = np.percentile(readings_array, 99)
-                    results[area] = float(percentile_99)
+                    # Apply aggrgeation method
+                    if self.aggregation_method == "max":
+                        value = float(np.max(readings_array))
+                    elif self.aggregation_method == "min":
+                        value = float(np.min(readings_array))
+                    elif self.aggregation_method == "avg":
+                        value = float(np.mean(readings_array))
+                    elif self.aggregation_method == "median":
+                        value = float(np.median(readings_array))
+                    elif self.aggregation_method == "pct95":
+                        value = float(np.percentile(readings_array, 95))
+                    elif self.aggregation_method == "pct99":
+                        value = float(np.percentile(readings_array, 99))
+                    elif self.aggregation_method == "first":
+                        value = float(readings_array[0])
+                    elif self.aggregation_method == "last":
+                        value = float(readings_array[-1])
+                    else:
+                        # Default to 99th percentile
+                        value = float(np.percentile(readings_array, 99))
+                    
+                    results[area] = value
                 else:
                     results[area] = 0.0
             else:
                 results[area] = 0.0
         
         return results
+    
+    def _save_alert_history(self, empty_areas: List[str], percentiles: Dict[str, float]):
+        """Save detailed alert history to a log file."""
+        # Create logs directory if it doesn't exist
+        logs_dir = os.path.join(self.state_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Generate timestamp for filename
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(logs_dir, f"alert_{timestamp}.json")
+        
+        # Prepare alert data
+        alert_data = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "location": self.location,
+            "empty_areas": empty_areas,
+            "all_percentiles": percentiles,
+            "threshold": self.empty_threshold,
+            "aggregation_method": self.aggregation_method,
+            "image_path": self.last_image_path if self.include_image else None,
+            "areas_monitored": self.areas
+        }
+        
+        # Save alert data to file
+        with open(log_file, "w") as f:
+            json.dump(alert_data, f, indent=2)
+        
+        LOGGER.info(f"Alert history saved to {log_file}")
     
     async def capture_image(self) -> Optional[Dict[str, Any]]:
         """Capture an image from the camera and save it to disk."""
@@ -624,6 +664,9 @@ class StockAlertEmail(Sensor):
         
         # Save state after image capture
         self._save_state()
+
+        # Save alert history after state
+        self._save_alert_history(empty_areas, percentiles)
         
         try:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -707,6 +750,10 @@ class StockAlertEmail(Sensor):
             # Log percentile values (for developer reference only)
             percentile_log = ", ".join([f"{a}: {v:.2f}" for a, v in percentiles.items() if a in empty_areas])
             LOGGER.info(f"Percentiles for empty areas: {percentile_log} (threshold: {self.empty_threshold})")
+
+            # Log percentile values for all areas for debugging...
+            all_percentile_log = ", ".join([f"{a}: {v:.2f}" for a, v in percentiles.items()])
+            LOGGER.info(f"All percentiles: {all_percentile_log}")
             
             # Send the email
             sg = SendGridAPIClient(self.sendgrid_api_key)
