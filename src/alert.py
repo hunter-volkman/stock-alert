@@ -769,7 +769,7 @@ class StockAlertEmail(Sensor):
                 LOGGER.error(f"Traceback: {tb_str}")
     
     async def perform_check(self):
-        """Check for empty areas based on 99th percentile and send alerts if needed."""
+        """Check for empty areas based on the configured aggregation method and send alerts if needed."""
         # Find the fill sensor dependency
         fill_sensor = None
         for name, resource in self.dependencies.items():
@@ -782,7 +782,7 @@ class StockAlertEmail(Sensor):
             return
         
         try:
-            # Get current readings to determine which areas are active
+            # Get current readings to determine which areas are active (currently)
             current_readings = await fill_sensor.get_readings()
             
             # Determine which configured areas are active in the current readings
@@ -815,7 +815,7 @@ class StockAlertEmail(Sensor):
             # Update last percentiles state for reporting
             self.last_percentiles = percentiles
             
-            # Find empty areas based on percentile values compared to threshold (only for active areas)
+            # Find empty areas based on percentile values compared to threshold (only do for the active areas)
             empty_areas = [area for area in active_areas if percentiles.get(area, 0.0) <= self.empty_threshold]
             
             # Update state
@@ -823,14 +823,36 @@ class StockAlertEmail(Sensor):
             self.last_check_time = datetime.datetime.now()
             self._save_state()
             
+            # Set description based on aggregation method
+            if self.aggregation_method == "max":
+                method_description = "maximum values"
+            elif self.aggregation_method == "min":
+                method_description = "minimum values"
+            elif self.aggregation_method == "avg":
+                method_description = "average values"
+            elif self.aggregation_method == "median":
+                method_description = "median values" 
+            elif self.aggregation_method == "pct95":
+                method_description = "95th percentile values"
+            elif self.aggregation_method == "pct99":
+                method_description = "99th percentile values"
+            elif self.aggregation_method == "first":
+                method_description = "first values"
+            elif self.aggregation_method == "last":
+                method_description = "last values"
+            else:
+                method_description = "calculated values"
+                
             # Send alert if needed
             if empty_areas:
+                # Logs for alert
                 LOGGER.info(f"Found {len(empty_areas)} empty areas: {', '.join(empty_areas)}")
-                LOGGER.info(f"99th percentile values: {', '.join([f'{a}: {v:.2f}' for a, v in percentiles.items() if a in empty_areas])}")
+                LOGGER.info(f"{method_description.capitalize()} for empty areas: {', '.join([f'{a}: {v:.2f}' for a, v in percentiles.items() if a in empty_areas])} (threshold: {self.empty_threshold})")
                 await self.send_alert(empty_areas, percentiles)
             else:
-                LOGGER.info("No empty areas found based on 99th percentile values")
-                LOGGER.debug(f"Current 99th percentile values: {percentiles}")
+                # Logs for no alert
+                LOGGER.info(f"No empty areas found based on {method_description}")
+                LOGGER.debug(f"Current {method_description}: {percentiles}")
                     
         except Exception as e:
             LOGGER.error(f"Error checking stock levels: {e}")
