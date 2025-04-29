@@ -852,7 +852,7 @@ class StockAlertEmail(Sensor):
             # Update last percentiles state for reporting
             self.last_percentiles = percentiles
             
-            # Find empty areas based on percentile values compared to threshold (only do for the active areas)
+            # Find empty areas based on percentile values compared to threshold (only for active areas)
             empty_areas = [area for area in active_areas if percentiles.get(area, 0.0) <= self.empty_threshold]
             
             # Update state
