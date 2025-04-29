@@ -588,6 +588,37 @@ class StockAlertEmail(Sensor):
         
         LOGGER.info(f"Alert history saved to {log_file}")
     
+    def _log_buffer_statistics(self):
+        """Log statistics about the readings buffer for each area."""
+        stats = {}
+        
+        for area in self.areas:
+            if area in self.readings_buffer and len(self.readings_buffer[area]) > 0:
+                readings_array = np.array(list(self.readings_buffer[area]))
+                if len(readings_array) > 0:
+                    # Calculate basic statistics
+                    stats[area] = {
+                        "count": len(readings_array),
+                        "min": float(np.min(readings_array)),
+                        "max": float(np.max(readings_array)),
+                        "mean": float(np.mean(readings_array)),
+                        "median": float(np.median(readings_array))
+                    }
+                else:
+                    stats[area] = {"count": 0}
+            else:
+                stats[area] = {"count": 0}
+        
+        # Log summary statistics
+        buffer_counts = ", ".join([f"{a}: {s['count']}" for a, s in stats.items()])
+        LOGGER.info(f"Buffer sizes: {buffer_counts}")
+        
+        # Log detailed statistics for non-empty buffers
+        for area, area_stats in stats.items():
+            if area_stats["count"] > 0:
+                LOGGER.info(f"Stats for {area}: min={area_stats['min']:.2f}, max={area_stats['max']:.2f}, "
+                        f"mean={area_stats['mean']:.2f}, median={area_stats['median']:.2f}")
+    
     async def capture_image(self) -> Optional[Dict[str, Any]]:
         """Capture an image from the camera and save it to disk."""
         if not self.include_image or not self.camera_name:
@@ -853,6 +884,9 @@ class StockAlertEmail(Sensor):
                 # Logs for no alert
                 LOGGER.info(f"No empty areas found based on {method_description}")
                 LOGGER.info(f"Current {method_description}: {percentiles}")
+            
+            # Log buffer statistics
+            self._log_buffer_statistics()
                     
         except Exception as e:
             LOGGER.error(f"Error checking stock levels: {e}")
