@@ -596,13 +596,17 @@ class StockAlertEmail(Sensor):
             if area in self.readings_buffer and len(self.readings_buffer[area]) > 0:
                 readings_array = np.array(list(self.readings_buffer[area]))
                 if len(readings_array) > 0:
-                    # Calculate basic statistics
+                    # Calculate statistics
                     stats[area] = {
                         "count": len(readings_array),
                         "min": float(np.min(readings_array)),
                         "max": float(np.max(readings_array)),
                         "mean": float(np.mean(readings_array)),
-                        "median": float(np.median(readings_array))
+                        "median": float(np.median(readings_array)),
+                        "pct95": float(np.percentile(readings_array, 95)),
+                        "pct99": float(np.percentile(readings_array, 99)),
+                        "first": float(readings_array[0]),
+                        "last": float(readings_array[-1])
                     }
                 else:
                     stats[area] = {"count": 0}
@@ -617,7 +621,9 @@ class StockAlertEmail(Sensor):
         for area, area_stats in stats.items():
             if area_stats["count"] > 0:
                 LOGGER.info(f"Stats for {area}: min={area_stats['min']:.2f}, max={area_stats['max']:.2f}, "
-                        f"mean={area_stats['mean']:.2f}, median={area_stats['median']:.2f}")
+                       f"mean={area_stats['mean']:.2f}, median={area_stats['median']:.2f}, "
+                       f"pct95={area_stats['pct95']:.2f}, pct99={area_stats['pct99']:.2f}, "
+                       f"first={area_stats['first']:.2f}, last={area_stats['last']:.2f}")
     
     async def capture_image(self) -> Optional[Dict[str, Any]]:
         """Capture an image from the camera and save it to disk."""
