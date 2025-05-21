@@ -2,7 +2,7 @@
 
 This module monitors stock levels using a sensor (e.g., `langer_fill`) and sends email alerts when specified areas of interest are empty. It is designed for environments like retail, with configurable check times, weekday-only operation by default, and optional camera image capture to include in alerts.
 
-## Model hunter:stock-alert:email
+## Model hunter:stock-alert:alert-email-sensor
 
 Sends email alerts via SendGrid when configured areas of interest have insufficient stock levels (based on percentile calculations), with optional image attachments from a camera. Alerts are scheduled at specific times, and the module maintains state persistence across restarts.
 
