@@ -7,9 +7,9 @@
   "models": [
     {
       "api": "rdk:component:sensor",
-      "model": "hunter:stock-alert:email",
+      "model": "hunter:stock-alert:alert-email-sensor",
       "short_description": "Sends email alerts with optional camera snapshots for empty areas of interest.",
-      "markdown_link": "README.md#model-hunterstock-alertemail",
+      "markdown_link": "README.md#model-hunterstock-alertalertemailsensor",
       "requires": [
         {"name": "langer_fill", "type": "component", "subtype": "sensor"},
         {"name": "camera", "type": "component", "subtype": "camera", "optional": true}

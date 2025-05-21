@@ -28,7 +28,7 @@ from sendgrid.helpers.mail import (
 LOGGER = getLogger(__name__)
 
 class StockAlertEmail(Sensor):
-    MODEL = Model(ModelFamily("hunter", "stock-alert"), "email")
+    MODEL = Model(ModelFamily("hunter", "stock-alert"), "alert-email-sensor")
     
     @classmethod
     def new(cls, config: ComponentConfig, dependencies: Mapping[str, ResourceBase]) -> "StockAlertEmail":
